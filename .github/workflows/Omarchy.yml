@@ -750,7 +750,6 @@ jobs:
       # ======================================================
       # START QEMU INSTALLATION
       # ======================================================
-
       - name: "🚀 Boot Omarchy installer"
 
         shell: bash
@@ -772,17 +771,12 @@ jobs:
           echo "  RAM       : ${VM_RAM}"
           echo "  Disk      : ${VM_DISK}"
           echo "  Accel     : ${QEMU_ACCEL}"
-          echo "  VNC       : ${VNC_PORT}"
+          echo "  VNC       : display 0 / TCP 5900"
           echo ""
 
-          #
-          # Network:
-          #
-          # hostfwd is intentionally used for SSH only.
-          #
-          # noVNC itself is exposed from the GitHub runner,
-          # not from the guest.
-          #
+          # ----------------------------------------------------
+          # Network
+          # ----------------------------------------------------
 
           NETWORK_ARGS=""
 
@@ -792,13 +786,9 @@ jobs:
 
           fi
 
-          #
-          # QEMU command.
-          #
-          # Disk is first in boot order.
-          # On first boot it falls through to the ISO.
-          # After installation the VM boots from the disk.
-          #
+          # ----------------------------------------------------
+          # CPU / acceleration
+          # ----------------------------------------------------
 
           if [[ "${QEMU_ACCEL}" == "kvm" ]]; then
 
@@ -819,71 +809,215 @@ jobs:
 
           fi
 
-          qemu-system-x86_64 \
-            "${ACCEL_ARGS[@]}" \
-            -machine q35 \
-            -smp "${VM_CPU}" \
-            -m "${VM_RAM}" \
-            -name "${VM_NAME}" \
-            \
-            -drive \
-              if=pflash,format=raw,readonly=on,file="${VM_DIR}/OVMF_CODE.fd" \
-            \
-            -drive \
-              if=pflash,format=raw,file="${VM_DIR}/OVMF_VARS.fd" \
-            \
-            -drive \
-              file="${VM_DIR}/omarchy.qcow2",\
-              format=qcow2,\
-              if=virtio,\
-              cache=writeback,\
-              discard=unmap \
-            \
-            -drive \
-              file="${VM_DIR}/omarchy.iso",\
-              media=cdrom,\
-              readonly=on \
-            \
-            -drive \
-              file="${VM_DIR}/cidata.iso",\
-              media=cdrom,\
-              readonly=on \
-            \
-            -boot order=c,menu=on \
-            \
-            -device virtio-vga \
-            \
-            -display none \
-            \
-            -vnc 127.0.0.1:0,password=off \
-            \
-            -netdev \
-              user,id=net0${NETWORK_ARGS} \
-            \
-            -device \
-              virtio-net-pci,netdev=net0 \
-            \
-            -device \
-              virtio-rng-pci \
-            \
-            -monitor \
-              unix:"${VM_DIR}/qemu-monitor.sock",server=on,wait=off \
-            \
-            -qmp \
-              unix:"${VM_DIR}/qmp.sock",server=on,wait=off \
-            \
-            -pidfile \
-              "${VM_DIR}/qemu.pid" \
-            \
-            -daemonize
+          # ----------------------------------------------------
+          # Remove stale state
+          # ----------------------------------------------------
 
-          sleep 3
+          rm -f \
+            "${VM_DIR}/qemu.pid" \
+            "${VM_DIR}/qmp.sock" \
+            "${VM_DIR}/qemu-monitor.sock"
+
+          # ----------------------------------------------------
+          # Show files
+          # ----------------------------------------------------
+
+          echo "VM files:"
+          ls -lh "${VM_DIR}"
+
+          echo ""
+
+          # ----------------------------------------------------
+          # Validate disk
+          # ----------------------------------------------------
+
+          echo "Checking virtual disk..."
+
+          qemu-img check \
+            "${VM_DIR}/omarchy.qcow2"
+
+          echo ""
+
+          qemu-img info \
+            "${VM_DIR}/omarchy.qcow2"
+
+          echo ""
+
+          # ----------------------------------------------------
+          # QEMU
+          # ----------------------------------------------------
+          #
+          # IMPORTANT:
+          #
+          # Every -drive argument is a SINGLE quoted argument.
+          #
+          # Disk:
+          #   none -> virtio-blk device
+          #
+          # ISO:
+          #   none -> IDE CD device
+          #
+          # CIDATA:
+          #   none -> second IDE CD device
+          #
+          # This avoids automatic bus/index collisions.
+          #
+          # ----------------------------------------------------
+
+          QEMU_CMD=(
+
+            qemu-system-x86_64
+
+            "${ACCEL_ARGS[@]}"
+
+            -machine
+            q35
+
+            -smp
+            "${VM_CPU}"
+
+            -m
+            "${VM_RAM}"
+
+            -name
+            "${VM_NAME}"
+
+            # ------------------------------------------------
+            # UEFI
+            # ------------------------------------------------
+
+            -drive
+            "if=pflash,format=raw,readonly=on,file=${VM_DIR}/OVMF_CODE.fd"
+
+            -drive
+            "if=pflash,format=raw,file=${VM_DIR}/OVMF_VARS.fd"
+
+            # ------------------------------------------------
+            # Main virtual disk
+            # ------------------------------------------------
+
+            -drive
+            "id=omarchy-disk,if=none,file=${VM_DIR}/omarchy.qcow2,format=qcow2,cache=writeback,discard=unmap"
+
+            -device
+            "virtio-blk-pci,drive=omarchy-disk"
+
+            # ------------------------------------------------
+            # Omarchy installer ISO
+            # ------------------------------------------------
+
+            -drive
+            "id=omarchy-iso,if=none,media=cdrom,readonly=on,file=${VM_DIR}/omarchy.iso"
+
+            -device
+            "ide-cd,drive=omarchy-iso"
+
+            # ------------------------------------------------
+            # CIDATA
+            # ------------------------------------------------
+
+            -drive
+            "id=cidata-iso,if=none,media=cdrom,readonly=on,file=${VM_DIR}/cidata.iso"
+
+            -device
+            "ide-cd,drive=cidata-iso"
+
+            # ------------------------------------------------
+            # Boot
+            # ------------------------------------------------
+
+            -boot
+            "order=c,menu=on"
+
+            # ------------------------------------------------
+            # Graphics
+            # ------------------------------------------------
+
+            -device
+            "virtio-vga"
+
+            -display
+            "none"
+
+            # ------------------------------------------------
+            # VNC
+            # ------------------------------------------------
+
+            -vnc
+            "127.0.0.1:0"
+
+            # ------------------------------------------------
+            # Network
+            # ------------------------------------------------
+
+            -netdev
+            "user,id=net0${NETWORK_ARGS}"
+
+            -device
+            "virtio-net-pci,netdev=net0"
+
+            # ------------------------------------------------
+            # RNG
+            # ------------------------------------------------
+
+            -device
+            "virtio-rng-pci"
+
+            # ------------------------------------------------
+            # QEMU monitor
+            # ------------------------------------------------
+
+            -monitor
+            "unix:${VM_DIR}/qemu-monitor.sock,server=on,wait=off"
+
+            # ------------------------------------------------
+            # QMP
+            # ------------------------------------------------
+
+            -qmp
+            "unix:${VM_DIR}/qmp.sock,server=on,wait=off"
+
+            # ------------------------------------------------
+            # PID
+            # ------------------------------------------------
+
+            -pidfile
+            "${VM_DIR}/qemu.pid"
+
+            # ------------------------------------------------
+            # Background
+            # ------------------------------------------------
+
+            -daemonize
+          )
+
+          echo ""
+          echo "============================================================"
+          echo "QEMU COMMAND"
+          echo "============================================================"
+          echo ""
+
+          printf '%q ' "${QEMU_CMD[@]}"
+
+          echo ""
+          echo ""
+
+          # ----------------------------------------------------
+          # Launch
+          # ----------------------------------------------------
+
+          "${QEMU_CMD[@]}"
+
+          sleep 5
+
+          # ----------------------------------------------------
+          # Verify PID
+          # ----------------------------------------------------
 
           if [[ ! -f "${VM_DIR}/qemu.pid" ]]; then
 
-            echo "❌ QEMU did not start."
-
-            cat "${QEMU_LOG}" 2>/dev/null || true
+            echo ""
+            echo "❌ QEMU PID file was not created."
 
             exit 1
 
@@ -893,16 +1027,56 @@ jobs:
 
           echo "QEMU PID: ${QEMU_PID}"
 
+          # ----------------------------------------------------
+          # Verify process
+          # ----------------------------------------------------
+
           if ! kill -0 "${QEMU_PID}" 2>/dev/null; then
 
+            echo ""
             echo "❌ QEMU process is not running."
 
             exit 1
 
           fi
 
+          # ----------------------------------------------------
+          # Verify VNC
+          # ----------------------------------------------------
+
           echo ""
-          echo "✅ QEMU started."
+
+          if timeout 5 bash -c \
+            "</dev/tcp/127.0.0.1/5900" \
+            2>/dev/null; then
+
+            echo "✅ VNC is listening on 127.0.0.1:5900"
+
+          else
+
+            echo "⚠️ VNC is not listening yet."
+
+          fi
+
+          # ----------------------------------------------------
+          # Verify QMP
+          # ----------------------------------------------------
+
+          if [[ -S "${VM_DIR}/qmp.sock" ]]; then
+
+            echo "✅ QMP socket created."
+
+          else
+
+            echo "⚠️ QMP socket not available yet."
+
+          fi
+
+          echo ""
+          echo "============================================================"
+          echo "✅ QEMU STARTED SUCCESSFULLY"
+          echo "============================================================"
+          echo ""
 
 
       # ======================================================
