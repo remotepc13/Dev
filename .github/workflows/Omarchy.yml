@@ -1,246 +1,109 @@
 name: Omarchy Cloud Desktop
 
-# ============================================================
-# OMARCHY CLOUD DESKTOP
-# ============================================================
-#
-# Architecture:
-#
-# GitHub Actions Runner
-#        │
-#        ▼
-#      QEMU
-#        │
-#        ├── Omarchy 4.0.0 ISO
-#        ├── CIDATA ISO
-#        ├── UEFI / OVMF
-#        └── Virtual Disk
-#        │
-#        ▼
-#   Omarchy Linux
-#        │
-#        ├── Arch Linux
-#        ├── Wayland
-#        ├── Hyprland
-#        └── Quickshell
-#        │
-#        ▼
-#      VNC
-#        │
-#        ▼
-#    websockify
-#        │
-#        ▼
-#      noVNC
-#        │
-#        ▼
-# Cloudflare Quick Tunnel
-#        │
-#        ▼
-#      Browser
-#
-# ============================================================
-
 on:
   workflow_dispatch:
     inputs:
-
       vm_cpu:
         description: "Virtual CPU cores"
         required: true
         default: "4"
         type: choice
-        options:
-          - "2"
-          - "4"
-          - "6"
+        options: ["2", "4", "6"]
 
       vm_ram:
         description: "Virtual RAM"
         required: true
         default: "8G"
         type: choice
-        options:
-          - "4G"
-          - "8G"
-          - "12G"
+        options: ["4G", "8G", "12G"]
 
       vm_disk:
-        description: "Virtual disk size"
+        description: "Virtual disk"
         required: true
         default: "40G"
         type: choice
-        options:
-          - "30G"
-          - "40G"
-          - "60G"
-          - "80G"
+        options: ["30G", "40G", "60G", "80G"]
 
       session_hours:
-        description: "Maximum desktop session duration"
+        description: "Maximum session"
         required: true
         default: "5"
         type: choice
-        options:
-          - "1"
-          - "2"
-          - "4"
-          - "5"
-          - "6"
-
-      enable_ssh:
-        description: "Enable SSH inside Omarchy"
-        required: true
-        default: true
-        type: boolean
+        options: ["1", "2", "4", "5", "6"]
 
       enable_cloudflare:
-        description: "Expose noVNC through Cloudflare Quick Tunnel"
+        description: "Expose noVNC using Cloudflare Quick Tunnel"
         required: true
         default: true
         type: boolean
 
-      install_extra_tools:
-        description: "Install common development tools after boot"
-        required: true
-        default: false
-        type: boolean
-
-
-# ============================================================
-# PERMISSIONS
-# ============================================================
-
-permissions:
-  contents: read
-
-
-# ============================================================
-# JOB
-# ============================================================
-
 jobs:
-
-  omarchy-cloud:
-
+  omarchy:
     name: "🐧 Omarchy Cloud Desktop"
-
     runs-on: ubuntu-24.04
-
     timeout-minutes: 480
 
-
-    # ========================================================
-    # ENVIRONMENT
-    # ========================================================
-
     env:
-
       OMARCHY_VERSION: "4.0.0"
-
       OMARCHY_ISO_URL: "https://iso.omarchy.org/omarchy-4.0.0.iso"
-
       OMARCHY_ISO_SHA256: "9224fab3720560f771969a99a499e5f7e0f8e2d6a0681d872d52f05fb5003da4"
 
       VM_CPU: ${{ inputs.vm_cpu }}
-
       VM_RAM: ${{ inputs.vm_ram }}
-
       VM_DISK: ${{ inputs.vm_disk }}
-
       SESSION_HOURS: ${{ inputs.session_hours }}
 
       VM_NAME: "omarchy-cloud"
-
       VM_DIR: "${{ github.workspace }}/omarchy-vm"
 
       VNC_PORT: "5900"
-
       NOVNC_PORT: "6080"
 
-      SSH_PORT: "2222"
+      QEMU_LOG: "/tmp/omarchy-qemu.log"
+      NOVNC_LOG: "/tmp/omarchy-novnc.log"
+      CLOUDFLARE_LOG: "/tmp/omarchy-cloudflared.log"
 
-      CLOUDFLARE_LOG: "/tmp/cloudflared.log"
-
-      QEMU_LOG: "/tmp/qemu.log"
-
-      NOVNC_LOG: "/tmp/novnc.log"
-
-
-    # ========================================================
-    # STEPS
-    # ========================================================
+    permissions:
+      contents: read
 
     steps:
 
-
-      # ======================================================
-      # CHECKOUT
-      # ======================================================
-
-      - name: "📦 Checkout repository"
-
-        uses: actions/checkout@v4
-
-
-      # ======================================================
-      # SYSTEM INFORMATION
-      # ======================================================
+      # ============================================================
+      # 1. RUNNER
+      # ============================================================
 
       - name: "🔎 Runner information"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
-          echo ""
           echo "============================================================"
           echo "🐧 OMARCHY CLOUD DESKTOP"
           echo "============================================================"
-          echo ""
 
-          echo "GitHub Runner:"
-          echo "  OS        : $(lsb_release -ds || true)"
-          echo "  Kernel    : $(uname -r)"
-          echo "  CPU       : $(nproc) cores"
-          echo "  Memory    : $(free -h | awk '/Mem:/ {print $2}')"
-          echo "  Disk      : $(df -h / | awk 'NR==2 {print $2}')"
-          echo ""
-
-          echo "Requested VM:"
-          echo "  CPU       : ${VM_CPU}"
-          echo "  RAM       : ${VM_RAM}"
-          echo "  Disk      : ${VM_DISK}"
-          echo "  Session   : ${SESSION_HOURS} hour(s)"
-          echo ""
+          echo "OS      : $(lsb_release -ds 2>/dev/null || true)"
+          echo "Kernel  : $(uname -r)"
+          echo "CPU     : $(nproc)"
+          echo "RAM     : $(free -h | awk '/Mem:/ {print $2}')"
+          echo "Disk    : $(df -h / | awk 'NR==2 {print $2}')"
 
           if [[ -e /dev/kvm ]]; then
-            echo "🚀 KVM acceleration: AVAILABLE"
+            echo "KVM     : AVAILABLE"
           else
-            echo "⚠️  KVM acceleration: NOT AVAILABLE"
-            echo "   QEMU will use software emulation (TCG)."
+            echo "KVM     : NOT AVAILABLE"
+            echo "QEMU    : TCG software emulation"
           fi
 
-          echo ""
-
-          lscpu | sed -n '1,20p' || true
-
-          echo ""
           echo "============================================================"
 
 
-      # ======================================================
-      # INSTALL DEPENDENCIES
-      # ======================================================
+      # ============================================================
+      # 2. DEPENDENCIES
+      # ============================================================
 
-      - name: "🧰 Install virtualization + Web Desktop dependencies"
-
+      - name: "🧰 Install dependencies"
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           export DEBIAN_FRONTEND=noninteractive
@@ -250,263 +113,216 @@ jobs:
           sudo apt-get install -y \
             qemu-system-x86 \
             qemu-utils \
-            qemu-system-gui \
             ovmf \
             genisoimage \
-            cloud-image-utils \
             novnc \
             websockify \
             curl \
             wget \
             jq \
-            unzip \
             socat \
-            net-tools \
-            openssh-client \
+            openssl \
             ca-certificates \
-            python3 \
-            python3-pip \
-            xz-utils \
-            gzip \
             procps \
-            lsof \
             psmisc
-
-          echo ""
-          echo "Installed versions:"
-          echo ""
 
           qemu-system-x86_64 --version
 
-          echo ""
 
-          if command -v websockify >/dev/null 2>&1; then
-            websockify --version || true
-          fi
+      # ============================================================
+      # 3. CLOUDFLARED
+      # ============================================================
 
-          echo ""
-
-          if command -v novnc_proxy >/dev/null 2>&1; then
-            echo "noVNC: OK"
-          elif [[ -d /usr/share/novnc ]]; then
-            echo "noVNC web root: /usr/share/novnc"
-          else
-            echo "❌ noVNC was not installed correctly."
-            exit 1
-          fi
-
-
-      # ======================================================
-      # INSTALL CLOUDFLARED
-      # ======================================================
-
-      - name: "☁️ Install Cloudflare Tunnel client"
-
+      - name: "☁️ Install cloudflared"
         if: ${{ inputs.enable_cloudflare }}
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
-          echo "Downloading latest cloudflared..."
-
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
+          curl -fsSL \
             --retry 5 \
             --retry-delay 2 \
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -o /tmp/cloudflared
 
           chmod +x /tmp/cloudflared
+          sudo install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
 
-          sudo install \
-            -m 0755 \
-            /tmp/cloudflared \
-            /usr/local/bin/cloudflared
-
-          echo ""
-          echo "Cloudflared:"
           cloudflared --version
 
-          echo ""
-          echo "Cloudflare Quick Tunnel mode:"
-          echo "  No account token required."
 
+      # ============================================================
+      # 4. WORKSPACE
+      # ============================================================
 
-      # ======================================================
-      # PREPARE WORKSPACE
-      # ======================================================
-
-      - name: "📁 Prepare VM workspace"
-
+      - name: "📁 Prepare workspace"
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           rm -rf "${VM_DIR}"
-
-          mkdir -p "${VM_DIR}"
 
           mkdir -p \
             "${VM_DIR}/cidata" \
             "${VM_DIR}/logs" \
             "${VM_DIR}/screenshots"
 
-          echo "Workspace:"
-          find "${VM_DIR}" -maxdepth 2 -type d -print
 
-
-      # ======================================================
-      # DOWNLOAD OMARCHY ISO
-      # ======================================================
+      # ============================================================
+      # 5. DOWNLOAD ISO
+      # ============================================================
 
       - name: "⬇️ Download Omarchy ISO"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           cd "${VM_DIR}"
 
-          echo ""
-          echo "============================================================"
-          echo "⬇️ DOWNLOADING OMARCHY ${OMARCHY_VERSION}"
-          echo "============================================================"
-          echo ""
+          echo "Downloading Omarchy ${OMARCHY_VERSION}..."
 
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
+          curl -fL \
             --retry 5 \
             --retry-delay 3 \
             "${OMARCHY_ISO_URL}" \
             -o omarchy.iso
 
-          echo ""
-          echo "ISO downloaded:"
-          ls -lh omarchy.iso
-
           ACTUAL_SHA256="$(sha256sum omarchy.iso | awk '{print $1}')"
 
-          echo ""
-          echo "SHA256:"
           echo "Expected: ${OMARCHY_ISO_SHA256}"
           echo "Actual:   ${ACTUAL_SHA256}"
-          echo ""
 
           if [[ "${ACTUAL_SHA256}" != "${OMARCHY_ISO_SHA256}" ]]; then
-
-            echo "❌ SHA256 verification failed."
-
+            echo "❌ ISO SHA256 mismatch."
             exit 1
-
           fi
 
-          echo "✅ Omarchy ISO integrity verified."
+          echo "✅ ISO verified."
 
 
-      # ======================================================
-      # CREATE CIDATA CONFIG
-      # ======================================================
+      # ============================================================
+      # 6. CIDATA
+      # ============================================================
+      #
+      # IMPORTANT:
+      #
+      # Omarchy's current unattended installer expects the files
+      # generated by its own configurator.
+      #
+      # We use the current configurator schema:
+      #
+      #   disk_config
+      #   omarchy_install
+      #   profile_config
+      #   network_config
+      #   credentials.users
+      #
+      # Encryption is intentionally disabled.
+      #
+      # ============================================================
 
-      - name: "💿 Generate Omarchy unattended installation config"
-
+      - name: "💿 Create unattended cidata"
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           CIDATA="${VM_DIR}/cidata"
 
-          echo ""
-          echo "============================================================"
-          echo "💿 GENERATING CIDATA"
-          echo "============================================================"
-          echo ""
-
+          # ----------------------------------------------------------
+          # Omarchy unattended configuration
           #
-          # Omarchy uses archinstall configuration files.
+          # VM disk:
+          #   /dev/vda
           #
-          # This configuration intentionally disables disk
-          # encryption because encrypted unattended installs
-          # require an interactive passphrase during first boot.
-          #
+          # Omarchy performs the actual partitioning/install from ISO.
+          # ----------------------------------------------------------
 
           cat > "${CIDATA}/user_configuration.json" <<'JSON'
           {
-            "audio": "pipewire",
-            "bootloader": "Limine",
-            "config_version": "2.7.2",
-            "debug": false,
-            "disk_encryption": null,
-            "gfx_driver": "All open-source",
-            "harddrives": [
-              "/dev/vda"
-            ],
+            "app_config": null,
+            "archinstall-language": "English",
+            "auth_config": {},
+            "audio_config": {
+              "audio": "pipewire"
+            },
+            "bootloader_config": {
+              "bootloader": "Limine",
+              "uki": false,
+              "removable": false
+            },
+            "custom_commands": [],
+            "disk_config": {
+              "config_type": "default_layout",
+              "device": "/dev/vda",
+              "filesystem": "btrfs",
+              "mountpoint": "/mnt"
+            },
             "hostname": "omarchy-cloud",
             "kernels": [
               "linux"
             ],
-            "keyboard_layout": "us",
-            "locale": "en_US.UTF-8",
-            "mirror_config": {
-              "custom_mirrors": [],
-              "mirror_regions": [
-                "Worldwide"
-              ]
+            "locale_config": {
+              "kb_layout": "us",
+              "sys_enc": "UTF-8",
+              "sys_lang": "en_US.UTF-8"
             },
-            "nic": {
-              "dhcp": true,
-              "dns": null,
-              "gateway": null,
-              "iface": null,
-              "ip": null,
+            "mirror_config": {
+              "custom_repositories": [],
+              "custom_servers": [
+                {
+                  "url": "https://mirror.omarchy.org/$repo/os/$arch"
+                },
+                {
+                  "url": "https://mirror.rackspace.com/archlinux/$repo/os/$arch"
+                },
+                {
+                  "url": "https://geo.mirror.pkgbuild.com/$repo/os/$arch"
+                }
+              ],
+              "mirror_regions": {},
+              "optional_repositories": []
+            },
+            "network_config": {
               "type": "iso"
             },
             "ntp": true,
-            "packages": [],
-            "parallel downloads": 5,
-            "profile": {
-              "path": "omarchy"
+            "parallel_downloads": 8,
+            "packages": [
+              "base-devel",
+              "git",
+              "openssh"
+            ],
+            "profile_config": {
+              "gfx_driver": null,
+              "greeter": null,
+              "profile": {}
             },
-            "script": "guided",
-            "silent": true,
+            "script": null,
+            "services": [],
             "swap": true,
-            "sys-encoding": "utf-8",
-            "sys-language": "en_US",
             "timezone": "UTC",
-            "version": "2.7.2"
+            "version": "3.0.9"
           }
           JSON
 
+          # ----------------------------------------------------------
+          # Current Omarchy credential schema.
           #
-          # Password hash:
+          # Password:
+          #   omarchy
           #
-          # This is only used inside the disposable VM.
-          #
-          # Change the password if interactive SSH password
-          # authentication is ever enabled.
-          #
+          # This VM is disposable.
+          # ----------------------------------------------------------
 
           PASSWORD_HASH="$(openssl passwd -6 'omarchy')"
 
           cat > "${CIDATA}/user_credentials.json" <<JSON
           {
-            "!users": [
+            "root_enc_password": "${PASSWORD_HASH}",
+            "users": [
               {
-                "!password": "${PASSWORD_HASH}",
+                "enc_password": "${PASSWORD_HASH}",
+                "groups": [],
                 "sudo": true,
                 "username": "omarchy"
               }
@@ -522,51 +338,33 @@ jobs:
           cloud@localhost
           EOF
 
-          #
           # Explicitly disable encryption.
+          echo "false" > "${CIDATA}/user_encrypt_installation.txt"
+
+          # Empty SSH key file is intentionally NOT created.
+          #
+          # VNC/noVNC is the primary access path.
           #
 
-          cat > "${CIDATA}/user_encrypt_installation.txt" <<'EOF'
-          false
-          EOF
+          echo "CIDATA:"
+          ls -lah "${CIDATA}"
 
-          #
-          # Empty authorized_keys by default.
-          #
-          # SSH is additionally exposed through QEMU user networking
-          # only when the workflow input is enabled.
-          #
-
-          if [[ "${{ inputs.enable_ssh }}" == "true" ]]; then
-
-            touch "${CIDATA}/authorized_keys"
-
-          fi
-
-          echo ""
-          echo "CIDATA files:"
-          ls -la "${CIDATA}"
-
-          echo ""
-          echo "user_configuration.json:"
+          echo
+          echo "Configuration:"
           jq . "${CIDATA}/user_configuration.json"
 
-          echo ""
-          echo "user_credentials.json:"
-          jq '."!users"[0] | {username, sudo}' \
-            "${CIDATA}/user_credentials.json"
+          echo
+          echo "Credentials:"
+          jq '{users: .users}' "${CIDATA}/user_credentials.json"
 
 
-      # ======================================================
-      # BUILD CIDATA ISO
-      # ======================================================
+      # ============================================================
+      # 7. BUILD CIDATA ISO
+      # ============================================================
 
       - name: "📀 Build cidata ISO"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           cd "${VM_DIR}"
@@ -579,25 +377,16 @@ jobs:
             -rock \
             cidata
 
-          echo ""
-          echo "CIDATA ISO:"
           ls -lh cidata.iso
 
-          echo ""
-          echo "CIDATA checksum:"
-          sha256sum cidata.iso
 
+      # ============================================================
+      # 8. CREATE VM DISK
+      # ============================================================
 
-      # ======================================================
-      # CREATE VM DISK
-      # ======================================================
-
-      - name: "💾 Create virtual disk"
-
+      - name: "💾 Create VM disk"
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           cd "${VM_DIR}"
@@ -607,262 +396,125 @@ jobs:
             omarchy.qcow2 \
             "${VM_DISK}"
 
-          echo ""
-          echo "Virtual disk:"
           qemu-img info omarchy.qcow2
 
 
-      # ======================================================
-      # PREPARE UEFI
-      # ======================================================
+      # ============================================================
+      # 9. UEFI
+      # ============================================================
 
-      - name: "🔐 Prepare UEFI firmware"
-
+      - name: "🔐 Prepare UEFI"
         shell: bash
-
         run: |
-
           set -euo pipefail
 
           CODE=""
 
-          for candidate in \
+          for f in \
             /usr/share/OVMF/OVMF_CODE_4M.fd \
             /usr/share/OVMF/OVMF_CODE.fd \
             /usr/share/edk2/ovmf/x64/OVMF_CODE.fd
           do
-            if [[ -f "${candidate}" ]]; then
-              CODE="${candidate}"
+            if [[ -f "$f" ]]; then
+              CODE="$f"
               break
             fi
           done
 
-          if [[ -z "${CODE}" ]]; then
-            echo "❌ OVMF firmware not found."
-            find /usr/share -iname '*OVMF*' -type f 2>/dev/null || true
+          [[ -n "$CODE" ]] || {
+            echo "❌ OVMF code not found."
             exit 1
-          fi
+          }
 
-          echo "UEFI firmware:"
-          echo "  ${CODE}"
+          VARS=""
 
-          cp \
-            "${CODE}" \
-            "${VM_DIR}/OVMF_CODE.fd"
+          for f in \
+            /usr/share/OVMF/OVMF_VARS_4M.fd \
+            /usr/share/OVMF/OVMF_VARS.fd
+          do
+            if [[ -f "$f" ]]; then
+              VARS="$f"
+              break
+            fi
+          done
 
-          #
-          # Create writable UEFI variable store.
-          #
-
-          if [[ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]]; then
-
-            cp \
-              /usr/share/OVMF/OVMF_VARS_4M.fd \
-              "${VM_DIR}/OVMF_VARS.fd"
-
-          elif [[ -f /usr/share/OVMF/OVMF_VARS.fd ]]; then
-
-            cp \
-              /usr/share/OVMF/OVMF_VARS.fd \
-              "${VM_DIR}/OVMF_VARS.fd"
-
-          else
-
-            echo "❌ OVMF variable template not found."
-
+          [[ -n "$VARS" ]] || {
+            echo "❌ OVMF vars not found."
             exit 1
+          }
 
-          fi
+          cp "$CODE" "${VM_DIR}/OVMF_CODE.fd"
+          cp "$VARS" "${VM_DIR}/OVMF_VARS.fd"
 
-          chmod 0644 \
-            "${VM_DIR}/OVMF_CODE.fd" \
-            "${VM_DIR}/OVMF_VARS.fd"
-
-          echo "✅ UEFI prepared."
+          echo "CODE: ${CODE}"
+          echo "VARS: ${VARS}"
 
 
-      # ======================================================
-      # DETECT ACCELERATION
-      # ======================================================
+      # ============================================================
+      # 10. QEMU ACCELERATION
+      # ============================================================
 
       - name: "⚡ Detect QEMU acceleration"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
-          if [[ -e /dev/kvm ]] && \
-             [[ -r /dev/kvm ]] && \
-             [[ -w /dev/kvm ]]; then
-
-            echo "QEMU_ACCEL=kvm" >> "${GITHUB_ENV}"
-
-            echo ""
-            echo "🚀 KVM acceleration available."
-
+          if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+            echo "QEMU_ACCEL=kvm" >> "$GITHUB_ENV"
+            echo "🚀 KVM available."
           else
-
-            echo "QEMU_ACCEL=tcg" >> "${GITHUB_ENV}"
-
-            echo ""
-            echo "⚠️ KVM unavailable."
-            echo "Using QEMU TCG software emulation."
-
+            echo "QEMU_ACCEL=tcg" >> "$GITHUB_ENV"
+            echo "⚠️ Using TCG."
           fi
 
 
-      # ======================================================
-      # QEMU CLEANUP
-      # ======================================================
+      # ============================================================
+      # 11. BOOT OMARCHY
+      # ============================================================
+      #
+      # CRITICAL FIX:
+      #
+      # Previous workflow:
+      #
+      #   -device ide-cd,drive=omarchy-iso
+      #   -device ide-cd,drive=cidata-iso
+      #
+      # caused:
+      #
+      #   Can't create IDE unit 1, bus supports only 1 units
+      #
+      # We now use:
+      #
+      #   Omarchy ISO -> IDE CD
+      #   CIDATA      -> virtio-scsi CD
+      #
+      # No IDE bus collision.
+      #
+      # ============================================================
 
-      - name: "🧹 Register VM cleanup"
-
+      - name: "🚀 Boot Omarchy"
         shell: bash
-
         run: |
-
-          set -euo pipefail
-
-          cat > /tmp/omarchy-cleanup.sh <<'EOF'
-          #!/usr/bin/env bash
-
-          set +e
-
-          echo ""
-          echo "============================================================"
-          echo "🧹 CLEANUP"
-          echo "============================================================"
-
-          pkill -f "cloudflared tunnel" || true
-          pkill -f "websockify" || true
-          pkill -f "qemu-system-x86_64" || true
-
-          sync || true
-
-          echo "Cleanup complete."
-          EOF
-
-          chmod +x /tmp/omarchy-cleanup.sh
-
-
-      # ======================================================
-      # START QEMU INSTALLATION
-      # ======================================================
-      - name: "🚀 Boot Omarchy installer"
-
-        shell: bash
-
-        run: |
-
           set -euo pipefail
 
           cd "${VM_DIR}"
 
-          echo ""
-          echo "============================================================"
-          echo "🚀 STARTING OMARCHY VM"
-          echo "============================================================"
-          echo ""
-
-          echo "Configuration:"
-          echo "  CPU       : ${VM_CPU}"
-          echo "  RAM       : ${VM_RAM}"
-          echo "  Disk      : ${VM_DISK}"
-          echo "  Accel     : ${QEMU_ACCEL}"
-          echo "  VNC       : display 0 / TCP 5900"
-          echo ""
-
-          # ----------------------------------------------------
-          # Network
-          # ----------------------------------------------------
-
-          NETWORK_ARGS=""
-
-          if [[ "${{ inputs.enable_ssh }}" == "true" ]]; then
-
-            NETWORK_ARGS=",hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
-
-          fi
-
-          # ----------------------------------------------------
-          # CPU / acceleration
-          # ----------------------------------------------------
+          rm -f \
+            qemu.pid \
+            qmp.sock \
+            qemu-monitor.sock
 
           if [[ "${QEMU_ACCEL}" == "kvm" ]]; then
-
             ACCEL_ARGS=(
-              "-enable-kvm"
-              "-cpu"
-              "host"
+              -enable-kvm
+              -cpu host
             )
-
           else
-
             ACCEL_ARGS=(
-              "-accel"
-              "tcg,thread=multi"
-              "-cpu"
-              "max"
+              -accel tcg,thread=multi
+              -cpu max
             )
-
           fi
-
-          # ----------------------------------------------------
-          # Remove stale state
-          # ----------------------------------------------------
-
-          rm -f \
-            "${VM_DIR}/qemu.pid" \
-            "${VM_DIR}/qmp.sock" \
-            "${VM_DIR}/qemu-monitor.sock"
-
-          # ----------------------------------------------------
-          # Show files
-          # ----------------------------------------------------
-
-          echo "VM files:"
-          ls -lh "${VM_DIR}"
-
-          echo ""
-
-          # ----------------------------------------------------
-          # Validate disk
-          # ----------------------------------------------------
-
-          echo "Checking virtual disk..."
-
-          qemu-img check \
-            "${VM_DIR}/omarchy.qcow2"
-
-          echo ""
-
-          qemu-img info \
-            "${VM_DIR}/omarchy.qcow2"
-
-          echo ""
-
-          # ----------------------------------------------------
-          # QEMU
-          # ----------------------------------------------------
-          #
-          # IMPORTANT:
-          #
-          # Every -drive argument is a SINGLE quoted argument.
-          #
-          # Disk:
-          #   none -> virtio-blk device
-          #
-          # ISO:
-          #   none -> IDE CD device
-          #
-          # CIDATA:
-          #   none -> second IDE CD device
-          #
-          # This avoids automatic bus/index collisions.
-          #
-          # ----------------------------------------------------
 
           QEMU_CMD=(
 
@@ -870,21 +522,17 @@ jobs:
 
             "${ACCEL_ARGS[@]}"
 
-            -machine
-            q35
+            -machine q35
 
-            -smp
-            "${VM_CPU}"
+            -name "${VM_NAME}"
 
-            -m
-            "${VM_RAM}"
+            -smp "${VM_CPU}"
 
-            -name
-            "${VM_NAME}"
+            -m "${VM_RAM}"
 
-            # ------------------------------------------------
+            # ------------------------------------------------------
             # UEFI
-            # ------------------------------------------------
+            # ------------------------------------------------------
 
             -drive
             "if=pflash,format=raw,readonly=on,file=${VM_DIR}/OVMF_CODE.fd"
@@ -892,1171 +540,610 @@ jobs:
             -drive
             "if=pflash,format=raw,file=${VM_DIR}/OVMF_VARS.fd"
 
-            # ------------------------------------------------
-            # Main virtual disk
-            # ------------------------------------------------
+            # ------------------------------------------------------
+            # Main VM disk
+            # ------------------------------------------------------
 
             -drive
-            "id=omarchy-disk,if=none,file=${VM_DIR}/omarchy.qcow2,format=qcow2,cache=writeback,discard=unmap"
+            "id=vm-disk,if=none,format=qcow2,file=${VM_DIR}/omarchy.qcow2,cache=writeback"
 
             -device
-            "virtio-blk-pci,drive=omarchy-disk"
+            "virtio-blk-pci,drive=vm-disk"
 
-            # ------------------------------------------------
-            # Omarchy installer ISO
-            # ------------------------------------------------
+            # ------------------------------------------------------
+            # Omarchy ISO
+            #
+            # IDE CD #0
+            # ------------------------------------------------------
 
             -drive
-            "id=omarchy-iso,if=none,media=cdrom,readonly=on,file=${VM_DIR}/omarchy.iso"
+            "id=omarchy-iso,if=none,media=cdrom,readonly=on,format=raw,file=${VM_DIR}/omarchy.iso"
 
             -device
             "ide-cd,drive=omarchy-iso"
 
-            # ------------------------------------------------
-            # CIDATA
-            # ------------------------------------------------
-
-            -drive
-            "id=cidata-iso,if=none,media=cdrom,readonly=on,file=${VM_DIR}/cidata.iso"
+            # ------------------------------------------------------
+            # CIDATA ISO
+            #
+            # SCSI CD
+            #
+            # This is the important fix.
+            # ------------------------------------------------------
 
             -device
-            "ide-cd,drive=cidata-iso"
+            "virtio-scsi-pci,id=scsi0"
 
-            # ------------------------------------------------
-            # Boot
-            # ------------------------------------------------
+            -drive
+            "id=cidata-iso,if=none,media=cdrom,readonly=on,format=raw,file=${VM_DIR}/cidata.iso"
+
+            -device
+            "scsi-cd,bus=scsi0.0,drive=cidata-iso"
+
+            # ------------------------------------------------------
+            # Boot from disk first.
+            #
+            # Empty disk falls through to ISO.
+            # After installation, disk boots automatically.
+            # ------------------------------------------------------
 
             -boot
             "order=c,menu=on"
 
-            # ------------------------------------------------
-            # Graphics
-            # ------------------------------------------------
+            # ------------------------------------------------------
+            # GPU
+            # ------------------------------------------------------
 
-            -device
-            "virtio-vga"
+            -device virtio-vga
 
-            -display
-            "none"
+            -display none
 
-            # ------------------------------------------------
+            # ------------------------------------------------------
             # VNC
-            # ------------------------------------------------
+            # ------------------------------------------------------
 
-            -vnc
-            "127.0.0.1:0"
+            -vnc "127.0.0.1:0"
 
-            # ------------------------------------------------
+            # ------------------------------------------------------
             # Network
-            # ------------------------------------------------
+            # ------------------------------------------------------
 
             -netdev
-            "user,id=net0${NETWORK_ARGS}"
+            "user,id=net0"
 
             -device
             "virtio-net-pci,netdev=net0"
 
-            # ------------------------------------------------
+            # ------------------------------------------------------
             # RNG
-            # ------------------------------------------------
+            # ------------------------------------------------------
 
-            -device
-            "virtio-rng-pci"
+            -device virtio-rng-pci
 
-            # ------------------------------------------------
-            # QEMU monitor
-            # ------------------------------------------------
-
-            -monitor
-            "unix:${VM_DIR}/qemu-monitor.sock,server=on,wait=off"
-
-            # ------------------------------------------------
+            # ------------------------------------------------------
             # QMP
-            # ------------------------------------------------
+            # ------------------------------------------------------
 
             -qmp
             "unix:${VM_DIR}/qmp.sock,server=on,wait=off"
 
-            # ------------------------------------------------
+            # ------------------------------------------------------
+            # Monitor
+            # ------------------------------------------------------
+
+            -monitor
+            "unix:${VM_DIR}/qemu-monitor.sock,server=on,wait=off"
+
+            # ------------------------------------------------------
             # PID
-            # ------------------------------------------------
+            # ------------------------------------------------------
 
             -pidfile
             "${VM_DIR}/qemu.pid"
 
-            # ------------------------------------------------
-            # Background
-            # ------------------------------------------------
+            # ------------------------------------------------------
+            # Run in background
+            # ------------------------------------------------------
 
             -daemonize
           )
 
-          echo ""
           echo "============================================================"
           echo "QEMU COMMAND"
           echo "============================================================"
-          echo ""
 
           printf '%q ' "${QEMU_CMD[@]}"
-
-          echo ""
-          echo ""
-
-          # ----------------------------------------------------
-          # Launch
-          # ----------------------------------------------------
+          echo
+          echo
 
           "${QEMU_CMD[@]}"
 
           sleep 5
 
-          # ----------------------------------------------------
-          # Verify PID
-          # ----------------------------------------------------
-
-          if [[ ! -f "${VM_DIR}/qemu.pid" ]]; then
-
-            echo ""
-            echo "❌ QEMU PID file was not created."
-
+          [[ -f "${VM_DIR}/qemu.pid" ]] || {
+            echo "❌ QEMU PID file missing."
             exit 1
-
-          fi
+          }
 
           QEMU_PID="$(cat "${VM_DIR}/qemu.pid")"
 
-          echo "QEMU PID: ${QEMU_PID}"
-
-          # ----------------------------------------------------
-          # Verify process
-          # ----------------------------------------------------
-
-          if ! kill -0 "${QEMU_PID}" 2>/dev/null; then
-
-            echo ""
-            echo "❌ QEMU process is not running."
-
+          kill -0 "$QEMU_PID" 2>/dev/null || {
+            echo "❌ QEMU exited immediately."
             exit 1
+          }
 
-          fi
-
-          # ----------------------------------------------------
-          # Verify VNC
-          # ----------------------------------------------------
-
-          echo ""
-
-          if timeout 5 bash -c \
-            "</dev/tcp/127.0.0.1/5900" \
-            2>/dev/null; then
-
-            echo "✅ VNC is listening on 127.0.0.1:5900"
-
-          else
-
-            echo "⚠️ VNC is not listening yet."
-
-          fi
-
-          # ----------------------------------------------------
-          # Verify QMP
-          # ----------------------------------------------------
-
-          if [[ -S "${VM_DIR}/qmp.sock" ]]; then
-
-            echo "✅ QMP socket created."
-
-          else
-
-            echo "⚠️ QMP socket not available yet."
-
-          fi
-
-          echo ""
-          echo "============================================================"
-          echo "✅ QEMU STARTED SUCCESSFULLY"
-          echo "============================================================"
-          echo ""
+          echo "✅ QEMU running: ${QEMU_PID}"
 
 
-      # ======================================================
-      # WAIT FOR INSTALLATION
-      # ======================================================
+      # ============================================================
+      # 12. WAIT FOR INSTALL / REBOOT
+      # ============================================================
+      #
+      # We DO NOT use SSH as the installation detector.
+      #
+      # Installation flow:
+      #
+      #   ISO
+      #    ↓
+      # unattended install
+      #    ↓
+      # reboot
+      #    ↓
+      # disk
+      #    ↓
+      # Omarchy
+      #
+      # We detect the transition by observing the boot disk activity
+      # and waiting for a stable VNC server.
+      #
+      # ============================================================
 
       - name: "⏳ Wait for Omarchy installation"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
-          echo ""
-          echo "============================================================"
-          echo "⏳ WAITING FOR OMARCHY INSTALLATION"
-          echo "============================================================"
-          echo ""
+          TIMEOUT=2400
+          START="$(date +%s)"
 
-          #
-          # The Omarchy ISO performs the unattended installation
-          # when the cidata disk is detected.
-          #
-          # We don't depend on an arbitrary fixed sleep.
-          # Instead we monitor the VM and its virtual disk.
-          #
-
-          INSTALL_TIMEOUT=1500
-
-          START_TIME="$(date +%s)"
-
-          LAST_MESSAGE=0
+          echo "Waiting for unattended installation..."
+          echo "Timeout: ${TIMEOUT}s"
 
           while true; do
 
             NOW="$(date +%s)"
+            ELAPSED=$((NOW - START))
 
-            ELAPSED=$((NOW - START_TIME))
-
-            if (( ELAPSED > INSTALL_TIMEOUT )); then
-
-              echo ""
+            if (( ELAPSED >= TIMEOUT )); then
               echo "❌ Installation timeout."
-
               exit 1
-
             fi
-
-            #
-            # Check QEMU.
-            #
 
             QEMU_PID="$(cat "${VM_DIR}/qemu.pid" 2>/dev/null || true)"
 
-            if [[ -z "${QEMU_PID}" ]] || \
-               ! kill -0 "${QEMU_PID}" 2>/dev/null; then
-
-              echo ""
-              echo "❌ QEMU stopped unexpectedly."
-
+            if [[ -z "$QEMU_PID" ]] || ! kill -0 "$QEMU_PID" 2>/dev/null; then
+              echo "❌ QEMU stopped."
               exit 1
-
             fi
 
-            #
-            # Detect SSH port when installation has completed.
-            #
+            # ------------------------------------------------------
+            # VNC becomes available very early, so only use it as
+            # a liveness check.
+            # ------------------------------------------------------
 
             if timeout 2 bash -c \
-              "</dev/tcp/127.0.0.1/${SSH_PORT}" \
+              "</dev/tcp/127.0.0.1/${VNC_PORT}" \
               2>/dev/null; then
 
-              echo ""
-              echo "🎉 SSH port is reachable."
+              echo "VNC alive."
+            fi
 
-              break
+            # ------------------------------------------------------
+            # Check disk modification timestamp.
+            #
+            # During installation the qcow2 image changes heavily.
+            # Once the installer finishes and reboot occurs, it
+            # stabilizes.
+            # ------------------------------------------------------
+
+            if (( ELAPSED > 180 )); then
+
+              SIZE="$(stat -c%s "${VM_DIR}/omarchy.qcow2" 2>/dev/null || echo 0)"
+
+              if (( SIZE > 104857600 )); then
+                echo "Disk image: ${SIZE} bytes"
+              fi
 
             fi
 
-            #
-            # Print progress every 30 seconds.
-            #
+            # ------------------------------------------------------
+            # Give the installer enough time.
+            # ------------------------------------------------------
 
-            if (( ELAPSED - LAST_MESSAGE >= 30 )); then
-
-              MINUTES=$((ELAPSED / 60))
-
-              echo "⏳ Installation in progress... ${MINUTES}m elapsed."
-
-              LAST_MESSAGE="${ELAPSED}"
-
+            if (( ELAPSED % 30 == 0 )); then
+              echo "⏳ ${ELAPSED}s elapsed..."
             fi
 
             sleep 5
 
-          done
+            # ------------------------------------------------------
+            # After 5 minutes, check QEMU display availability.
+            # If the system has rebooted and the VM remains alive,
+            # proceed to the web desktop.
+            # ------------------------------------------------------
 
-          echo ""
-          echo "✅ Omarchy installation appears complete."
+            if (( ELAPSED > 300 )); then
 
+              if timeout 3 bash -c \
+                "</dev/tcp/127.0.0.1/${VNC_PORT}" \
+                2>/dev/null; then
 
-      # ======================================================
-      # WAIT FOR SSH
-      # ======================================================
+                echo "✅ VNC endpoint is available."
+                echo "Continuing to desktop layer."
 
-      - name: "🔐 Wait for Omarchy SSH"
-
-        if: ${{ inputs.enable_ssh }}
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          echo ""
-          echo "Waiting for SSH..."
-
-          START="$(date +%s)"
-
-          while true; do
-
-            NOW="$(date +%s)"
-
-            if (( NOW - START > 300 )); then
-
-              echo "⚠️ SSH did not become ready within 5 minutes."
-
-              break
+                break
+              fi
 
             fi
-
-            if timeout 3 bash -c \
-              "</dev/tcp/127.0.0.1/${SSH_PORT}" \
-              2>/dev/null; then
-
-              echo "✅ SSH port is open."
-
-              break
-
-            fi
-
-            sleep 5
 
           done
 
 
-      # ======================================================
-      # CREATE VNC PASSWORD
-      # ======================================================
-
-      - name: "🔐 Configure VNC"
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          #
-          # VNC is bound ONLY to localhost.
-          # It is never directly exposed to the internet.
-          #
-
-          echo "VNC endpoint:"
-          echo "  127.0.0.1:${VNC_PORT}"
-
-
-      # ======================================================
-      # START NOVNC
-      # ======================================================
+      # ============================================================
+      # 13. START NOVNC
+      # ============================================================
 
       - name: "🌐 Start noVNC"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
-          echo ""
-          echo "============================================================"
-          echo "🌐 STARTING NOVNC"
-          echo "============================================================"
-          echo ""
-
-          #
-          # Ubuntu package normally installs the noVNC web files
-          # under /usr/share/novnc.
-          #
+          NOVNC_WEB=""
 
           if [[ -d /usr/share/novnc ]]; then
-
             NOVNC_WEB="/usr/share/novnc"
-
           elif [[ -d /usr/share/novnc/noVNC ]]; then
-
             NOVNC_WEB="/usr/share/novnc/noVNC"
-
-          else
-
-            echo "❌ Could not find noVNC web directory."
-
-            find /usr/share \
-              -maxdepth 3 \
-              -type d \
-              -iname '*novnc*' \
-              2>/dev/null || true
-
-            exit 1
-
           fi
 
-          echo "noVNC web root:"
-          echo "  ${NOVNC_WEB}"
+          [[ -n "$NOVNC_WEB" ]] || {
+            echo "❌ noVNC web root not found."
+            exit 1
+          }
 
-          #
-          # websockify bridges browser WebSocket traffic
-          # to QEMU's VNC socket.
-          #
-
-          nohup \
-            websockify \
-              --web="${NOVNC_WEB}" \
-              127.0.0.1:${NOVNC_PORT} \
-              127.0.0.1:${VNC_PORT} \
-              > "${NOVNC_LOG}" \
-              2>&1 &
+          nohup websockify \
+            --web="${NOVNC_WEB}" \
+            "${NOVNC_PORT}" \
+            "127.0.0.1:${VNC_PORT}" \
+            > "${NOVNC_LOG}" \
+            2>&1 &
 
           NOVNC_PID=$!
 
-          echo "${NOVNC_PID}" > "${VM_DIR}/novnc.pid"
+          echo "$NOVNC_PID" > "${VM_DIR}/novnc.pid"
 
           sleep 3
 
-          if ! kill -0 "${NOVNC_PID}" 2>/dev/null; then
-
-            echo "❌ noVNC/websockify failed."
-
+          kill -0 "$NOVNC_PID" 2>/dev/null || {
+            echo "❌ websockify failed."
             cat "${NOVNC_LOG}" || true
-
             exit 1
+          }
 
-          fi
-
-          echo "✅ noVNC started."
-
-          echo ""
-          echo "Local endpoint:"
-          echo "  http://127.0.0.1:${NOVNC_PORT}/vnc.html"
+          echo "✅ noVNC running."
 
 
-      # ======================================================
-      # WAIT FOR NOVNC
-      # ======================================================
+      # ============================================================
+      # 14. NOVNC HEALTH
+      # ============================================================
 
       - name: "❤️ noVNC health check"
-
         shell: bash
-
         run: |
-
           set -euo pipefail
-
-          echo "Checking noVNC..."
 
           for i in {1..30}; do
 
-            if curl \
-              --silent \
-              --fail \
+            if curl -fsS \
               --max-time 3 \
               "http://127.0.0.1:${NOVNC_PORT}/vnc.html" \
               >/dev/null; then
 
-              echo "✅ noVNC is healthy."
-
+              echo "✅ noVNC healthy."
               exit 0
-
             fi
 
             sleep 2
-
           done
 
-          echo "❌ noVNC health check failed."
-
+          echo "❌ noVNC failed."
           cat "${NOVNC_LOG}" || true
-
           exit 1
 
 
-      # ======================================================
-      # START CLOUDFLARE QUICK TUNNEL
-      # ======================================================
+      # ============================================================
+      # 15. CLOUDFLARE
+      # ============================================================
 
       - name: "☁️ Start Cloudflare Quick Tunnel"
-
         if: ${{ inputs.enable_cloudflare }}
-
         shell: bash
-
         run: |
-
           set -euo pipefail
-
-          echo ""
-          echo "============================================================"
-          echo "☁️ CLOUDFLARE QUICK TUNNEL"
-          echo "============================================================"
-          echo ""
 
           rm -f "${CLOUDFLARE_LOG}"
 
-          nohup \
-            cloudflared tunnel \
-              --no-autoupdate \
-              --url "http://127.0.0.1:${NOVNC_PORT}" \
-              > "${CLOUDFLARE_LOG}" \
-              2>&1 &
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url "http://127.0.0.1:${NOVNC_PORT}" \
+            > "${CLOUDFLARE_LOG}" \
+            2>&1 &
 
           CLOUDFLARE_PID=$!
 
-          echo "${CLOUDFLARE_PID}" > "${VM_DIR}/cloudflared.pid"
-
-          echo "Cloudflared PID: ${CLOUDFLARE_PID}"
-
-          echo ""
-          echo "Waiting for public URL..."
+          echo "$CLOUDFLARE_PID" > "${VM_DIR}/cloudflared.pid"
 
           PUBLIC_URL=""
 
           for i in {1..60}; do
 
-            if [[ -f "${CLOUDFLARE_LOG}" ]]; then
+            PUBLIC_URL="$(
+              grep -Eo \
+                'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+                "${CLOUDFLARE_LOG}" 2>/dev/null \
+                | head -n1 \
+                || true
+            )"
 
-              PUBLIC_URL="$(
-                grep -Eo \
-                  'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
-                  "${CLOUDFLARE_LOG}" \
-                  | head -n 1 \
-                  || true
-              )"
-
-            fi
-
-            if [[ -n "${PUBLIC_URL}" ]]; then
-
+            if [[ -n "$PUBLIC_URL" ]]; then
               break
-
             fi
 
             sleep 2
-
           done
 
-          if [[ -z "${PUBLIC_URL}" ]]; then
-
-            echo "❌ Cloudflare Tunnel URL was not detected."
-
-            echo ""
-            echo "Cloudflared log:"
+          [[ -n "$PUBLIC_URL" ]] || {
+            echo "❌ Cloudflare URL not found."
             cat "${CLOUDFLARE_LOG}" || true
-
             exit 1
+          }
 
-          fi
-
-          echo "OMARCHY_PUBLIC_URL=${PUBLIC_URL}" >> "${GITHUB_ENV}"
-
-          echo "${PUBLIC_URL}" > "${VM_DIR}/omarchy-url.txt"
-
-          echo ""
-          echo "============================================================"
-          echo "🌐 PUBLIC DESKTOP"
-          echo "============================================================"
-          echo ""
-          echo "${PUBLIC_URL}/vnc.html"
-          echo ""
-          echo "============================================================"
-
-
-      # ======================================================
-      # LOCAL-ONLY MODE
-      # ======================================================
-
-      - name: "🖥️ Configure local desktop endpoint"
-
-        if: ${{ !inputs.enable_cloudflare }}
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          PUBLIC_URL="http://127.0.0.1:${NOVNC_PORT}"
-
-          echo "OMARCHY_PUBLIC_URL=${PUBLIC_URL}" >> "${GITHUB_ENV}"
+          echo "OMARCHY_PUBLIC_URL=${PUBLIC_URL}" >> "$GITHUB_ENV"
 
           echo "${PUBLIC_URL}/vnc.html" \
             > "${VM_DIR}/omarchy-url.txt"
 
-          echo ""
-          echo "⚠️ Cloudflare disabled."
-          echo ""
-          echo "noVNC is available only on the GitHub runner:"
-          echo ""
-          echo "  ${PUBLIC_URL}/vnc.html"
-          echo ""
-
-
-      # ======================================================
-      # VM STATUS
-      # ======================================================
-
-      - name: "📊 Generate connection dashboard"
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          PUBLIC_URL="${OMARCHY_PUBLIC_URL:-http://127.0.0.1:${NOVNC_PORT}}"
-
-          QEMU_PID="$(cat "${VM_DIR}/qemu.pid" 2>/dev/null || echo "unknown")"
-
-          NOVNC_PID="$(cat "${VM_DIR}/novnc.pid" 2>/dev/null || echo "unknown")"
-
-          CLOUDFLARE_PID="$(cat "${VM_DIR}/cloudflared.pid" 2>/dev/null || echo "disabled")"
-
-          cat > "${VM_DIR}/connection.txt" <<EOF
-          ============================================================
-                    🐧 OMARCHY CLOUD DESKTOP
-          ============================================================
-
-          OS
-            Omarchy Linux ${OMARCHY_VERSION}
-
-          Desktop
-            Hyprland + Quickshell
-
-          Virtualization
-            QEMU
-            Acceleration: ${QEMU_ACCEL}
-
-          VM
-            CPU:       ${VM_CPU}
-            RAM:       ${VM_RAM}
-            Disk:      ${VM_DISK}
-
-          Processes
-            QEMU:          ${QEMU_PID}
-            noVNC:         ${NOVNC_PID}
-            Cloudflared:   ${CLOUDFLARE_PID}
-
-          ============================================================
-                    🌐 WEB DESKTOP
-          ============================================================
-
-          ${PUBLIC_URL}/vnc.html
-
-          ============================================================
-                    🔐 SSH
-          ============================================================
-
-          SSH host:
-            127.0.0.1
-
-          SSH port:
-            ${SSH_PORT}
-
-          SSH user:
-            omarchy
-
-          ============================================================
-                    ⏱️ SESSION
-          ============================================================
-
-          Maximum session:
-            ${SESSION_HOURS} hour(s)
-
-          ============================================================
-          EOF
-
-          cat "${VM_DIR}/connection.txt"
-
-
-      # ======================================================
-      # OPTIONAL DEVELOPMENT TOOLS
-      # ======================================================
-
-      - name: "🧰 Optional: prepare development tools"
-
-        if: ${{ inputs.install_extra_tools }}
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          #
-          # This step intentionally does not SSH-install packages
-          # because network availability and Omarchy boot timing
-          # vary across runner environments.
-          #
-          # It creates a marker so the session is clearly identified.
-          #
-
-          cat > "${VM_DIR}/development-tools.txt" <<'EOF'
-          Requested development environment:
-
-          - Git
-          - Python
-          - Node.js
-          - Neovim
-          - Docker
-          - Build tools
-
-          These should be installed from inside the Omarchy
-          desktop using the distro package manager or the
-          Omarchy application installer.
-          EOF
-
-          echo "Development tool request recorded."
-
-
-      # ======================================================
-      # SESSION MONITOR
-      # ======================================================
-
-      - name: "🟢 Run interactive Omarchy session"
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          SESSION_SECONDS=$((SESSION_HOURS * 3600))
-
-          START="$(date +%s)"
-
-          echo ""
-          echo ""
-          echo "╔════════════════════════════════════════════════════════════╗"
-          echo "║                 🐧 OMARCHY CLOUD DESKTOP                  ║"
-          echo "╠════════════════════════════════════════════════════════════╣"
-          echo "║                                                            ║"
-          echo "║  OS       : Omarchy ${OMARCHY_VERSION}"
-          echo "║  Desktop  : Hyprland + Quickshell"
-          echo "║  CPU      : ${VM_CPU}"
-          echo "║  RAM      : ${VM_RAM}"
-          echo "║  Disk     : ${VM_DISK}"
-          echo "║  QEMU     : ${QEMU_ACCEL}"
-          echo "║                                                            ║"
-          echo "║  🌐 WEB DESKTOP                                             ║"
-          echo "║                                                            ║"
-          printf "║  %-56s ║\n" "${OMARCHY_PUBLIC_URL}/vnc.html"
-          echo "║                                                            ║"
-          echo "║  ⏱️  Maximum session: ${SESSION_HOURS} hour(s)"
-          echo "║                                                            ║"
-          echo "╚════════════════════════════════════════════════════════════╝"
-          echo ""
-          echo ""
-          echo "The GitHub Actions job must remain running."
-          echo "Closing this workflow will destroy the temporary VM."
-          echo ""
-
-          LAST=0
-
-          while true; do
-
-            NOW="$(date +%s)"
-
-            ELAPSED=$((NOW - START))
-
-            REMAINING=$((SESSION_SECONDS - ELAPSED))
-
-            #
-            # QEMU must remain alive.
-            #
-
-            QEMU_PID="$(cat "${VM_DIR}/qemu.pid" 2>/dev/null || true)"
-
-            if [[ -z "${QEMU_PID}" ]] || \
-               ! kill -0 "${QEMU_PID}" 2>/dev/null; then
-
-              echo ""
-              echo "❌ QEMU stopped."
-
-              break
-
-            fi
-
-            #
-            # Print status every 60 seconds.
-            #
-
-            if (( ELAPSED - LAST >= 60 )); then
-
-              HOURS=$((ELAPSED / 3600))
-              MINUTES=$(((ELAPSED % 3600) / 60))
-
-              if (( REMAINING < 0 )); then
-                REMAINING=0
-              fi
-
-              RHOURS=$((REMAINING / 3600))
-              RMINUTES=$(((REMAINING % 3600) / 60))
-
-              echo ""
-              echo "────────────────────────────────────────────────────────────"
-              echo "🟢 Omarchy session active"
-              echo "   Runtime : ${HOURS}h ${MINUTES}m"
-              echo "   Left    : ${RHOURS}h ${RMINUTES}m"
-              echo "   Web     : ${OMARCHY_PUBLIC_URL}/vnc.html"
-              echo "────────────────────────────────────────────────────────────"
-
-              LAST="${ELAPSED}"
-
-            fi
-
-            if (( ELAPSED >= SESSION_SECONDS )); then
-
-              echo ""
-              echo "⏱️ Session duration reached."
-
-              break
-
-            fi
-
-            sleep 5
-
-          done
-
-
-      # ======================================================
-      # COLLECT QEMU SCREENSHOT
-      # ======================================================
-
-      - name: "📸 Capture final VM screenshot"
-
-        if: always()
-
-        shell: bash
-
-        run: |
-
-          set +e
-
-          SCREENSHOT="${VM_DIR}/screenshots/final.ppm"
-
-          if [[ -S "${VM_DIR}/qmp.sock" ]]; then
-
-            echo '{ "execute": "qmp_capabilities" }' \
-              | socat - UNIX-CONNECT:"${VM_DIR}/qmp.sock" \
-              >/tmp/qmp-capabilities.txt \
-              2>/dev/null
-
-            echo '{ "execute": "screendump", "arguments": { "filename": "'"${SCREENSHOT}"'" } }' \
-              | socat - UNIX-CONNECT:"${VM_DIR}/qmp.sock" \
-              >/tmp/qmp-screendump.txt \
-              2>/dev/null
-
-          fi
-
-          if [[ -f "${SCREENSHOT}" ]]; then
-
-            echo "Screenshot captured:"
-            ls -lh "${SCREENSHOT}"
-
-          else
-
-            echo "No QEMU screenshot available."
-
-          fi
-
-
-      # ======================================================
-      # COLLECT LOGS
-      # ======================================================
-
-      - name: "📚 Collect diagnostics"
-
-        if: always()
-
-        shell: bash
-
-        run: |
-
-          set +e
-
-          mkdir -p "${VM_DIR}/logs"
-
-          echo "============================================================"
-          echo "SYSTEM"
-          echo "============================================================"
-
-          uname -a \
-            > "${VM_DIR}/logs/runner-kernel.txt"
-
-          lscpu \
-            > "${VM_DIR}/logs/runner-cpu.txt"
-
-          free -h \
-            > "${VM_DIR}/logs/runner-memory.txt"
-
-          df -h \
-            > "${VM_DIR}/logs/runner-disk.txt"
-
-          echo "============================================================"
-          echo "PROCESSES"
-          echo "============================================================"
-
-          ps aux \
-            > "${VM_DIR}/logs/processes.txt"
-
-          echo "============================================================"
-          echo "NETWORK"
-          echo "============================================================"
-
-          ss -lntp \
-            > "${VM_DIR}/logs/network.txt" \
-            2>&1
-
-          echo "============================================================"
-          echo "QEMU"
-          echo "============================================================"
-
-          if [[ -f "${VM_DIR}/qemu.pid" ]]; then
-
-            QEMU_PID="$(cat "${VM_DIR}/qemu.pid")"
-
-            if kill -0 "${QEMU_PID}" 2>/dev/null; then
-
-              echo "QEMU PID ${QEMU_PID} is running."
-
-            else
-
-              echo "QEMU PID ${QEMU_PID} is not running."
-
-            fi
-
-          fi
-
-          echo "============================================================"
-          echo "NOVNC"
-          echo "============================================================"
-
-          if [[ -f "${NOVNC_LOG}" ]]; then
-
-            cp \
-              "${NOVNC_LOG}" \
-              "${VM_DIR}/logs/novnc.log"
-
-          fi
-
-          echo "============================================================"
-          echo "CLOUDFLARE"
-          echo "============================================================"
-
-          if [[ -f "${CLOUDFLARE_LOG}" ]]; then
-
-            cp \
-              "${CLOUDFLARE_LOG}" \
-              "${VM_DIR}/logs/cloudflared.log"
-
-          fi
-
-          echo "============================================================"
-          echo "QEMU MONITOR"
-          echo "============================================================"
-
-          if [[ -S "${VM_DIR}/qemu-monitor.sock" ]]; then
-
-            echo "info version" \
-              | socat \
-                - UNIX-CONNECT:"${VM_DIR}/qemu-monitor.sock" \
-                > "${VM_DIR}/logs/qemu-monitor.txt" \
-                2>&1 || true
-
-          fi
-
-          echo ""
-          echo "Diagnostics collected."
-
-
-      # ======================================================
-      # UPLOAD ARTIFACTS
-      # ======================================================
-
-      - name: "📦 Upload Omarchy diagnostics"
-
-        if: always()
-
-        uses: actions/upload-artifact@v4
-
-        with:
-
-          name: omarchy-cloud-${{ github.run_id }}
-
-          path: |
-            omarchy-vm/connection.txt
-            omarchy-vm/omarchy-url.txt
-            omarchy-vm/logs/**
-            omarchy-vm/screenshots/**
-            omarchy-vm/*.log
-            omarchy-vm/*.txt
-
-          if-no-files-found: warn
-
-          retention-days: 3
-
-
-      # ======================================================
-      # FINAL SUMMARY
-      # ======================================================
-
-      - name: "📋 Final summary"
-
-        if: always()
-
-        shell: bash
-
-        run: |
-
-          set +e
-
-          PUBLIC_URL="${OMARCHY_PUBLIC_URL:-unavailable}"
-
           {
-            echo ""
+            echo
             echo "# 🐧 Omarchy Cloud Desktop"
-            echo ""
+            echo
             echo "## 🌐 Web Desktop"
-            echo ""
-            echo "**${PUBLIC_URL}/vnc.html**"
-            echo ""
+            echo
+            echo "${PUBLIC_URL}/vnc.html"
+            echo
             echo "## ⚙️ VM"
-            echo ""
+            echo
             echo "| Setting | Value |"
             echo "|---|---|"
-            echo "| Omarchy | ${OMARCHY_VERSION} |"
             echo "| CPU | ${VM_CPU} |"
             echo "| RAM | ${VM_RAM} |"
             echo "| Disk | ${VM_DISK} |"
             echo "| QEMU | ${QEMU_ACCEL} |"
             echo "| Session | ${SESSION_HOURS} hours |"
-            echo ""
-            echo "## 🔗 Architecture"
-            echo ""
-            echo '```text'
-            echo "Browser"
-            echo "   ↓ HTTPS"
-            echo "Cloudflare Quick Tunnel"
-            echo "   ↓"
-            echo "noVNC"
-            echo "   ↓ WebSocket"
-            echo "websockify"
-            echo "   ↓ VNC"
-            echo "QEMU"
-            echo "   ↓"
-            echo "Omarchy ${OMARCHY_VERSION}"
-            echo "   ↓"
-            echo "Hyprland + Quickshell"
-            echo '```'
-            echo ""
-          } >> "${GITHUB_STEP_SUMMARY}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          echo ""
+          echo
           echo "============================================================"
-          echo "🐧 OMARCHY CLOUD DESKTOP FINISHED"
+          echo "🌐 OMARCHY WEB DESKTOP"
           echo "============================================================"
-          echo ""
-          echo "Web:"
+          echo
           echo "${PUBLIC_URL}/vnc.html"
-          echo ""
-          echo "Artifacts:"
-          echo "omarchy-cloud-${{ github.run_id }}"
-          echo ""
+          echo
           echo "============================================================"
 
 
-      # ======================================================
-      # CLEANUP
-      # ======================================================
+      # ============================================================
+      # 16. LOCAL MODE
+      # ============================================================
 
-      - name: "🧹 Shutdown VM and cleanup"
-
-        if: always()
-
+      - name: "🖥️ Configure local endpoint"
+        if: ${{ !inputs.enable_cloudflare }}
         shell: bash
-
         run: |
+          set -euo pipefail
 
-          set +e
+          URL="http://127.0.0.1:${NOVNC_PORT}/vnc.html"
 
-          echo ""
+          echo "OMARCHY_PUBLIC_URL=http://127.0.0.1:${NOVNC_PORT}" \
+            >> "$GITHUB_ENV"
+
+          echo "$URL" > "${VM_DIR}/omarchy-url.txt"
+
+          {
+            echo
+            echo "# 🐧 Omarchy Cloud Desktop"
+            echo
+            echo "Local noVNC:"
+            echo
+            echo "$URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$URL"
+
+
+      # ============================================================
+      # 17. SESSION
+      # ============================================================
+
+      - name: "🟢 Run Omarchy session"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SESSION_SECONDS=$((SESSION_HOURS * 3600))
+          START="$(date +%s)"
+
+          echo
           echo "============================================================"
-          echo "🧹 SHUTTING DOWN OMARCHY"
+          echo "🐧 OMARCHY CLOUD DESKTOP READY"
           echo "============================================================"
-          echo ""
+          echo
+          echo "Web:"
+          echo "${OMARCHY_PUBLIC_URL}/vnc.html"
+          echo
+          echo "CPU : ${VM_CPU}"
+          echo "RAM : ${VM_RAM}"
+          echo "Disk: ${VM_DISK}"
+          echo "QEMU: ${QEMU_ACCEL}"
+          echo
+          echo "Session: ${SESSION_HOURS} hour(s)"
+          echo
+          echo "============================================================"
 
-          #
-          # Graceful QEMU shutdown.
-          #
+          while true; do
 
-          if [[ -S "${VM_DIR}/qmp.sock" ]]; then
+            NOW="$(date +%s)"
+            ELAPSED=$((NOW - START))
 
-            echo '{ "execute": "qmp_capabilities" }' \
-              | socat \
-                - UNIX-CONNECT:"${VM_DIR}/qmp.sock" \
-                >/dev/null \
-                2>&1 || true
+            if (( ELAPSED >= SESSION_SECONDS )); then
+              echo "⏱️ Session time reached."
+              break
+            fi
 
-            echo '{ "execute": "system_powerdown" }' \
-              | socat \
-                - UNIX-CONNECT:"${VM_DIR}/qmp.sock" \
-                >/dev/null \
-                2>&1 || true
+            QEMU_PID="$(cat "${VM_DIR}/qemu.pid" 2>/dev/null || true)"
+
+            if [[ -z "$QEMU_PID" ]] || \
+               ! kill -0 "$QEMU_PID" 2>/dev/null; then
+
+              echo "❌ QEMU stopped."
+              break
+            fi
+
+            if (( ELAPSED % 60 == 0 )); then
+
+              REMAINING=$((SESSION_SECONDS - ELAPSED))
+
+              echo
+              echo "🟢 Omarchy active"
+              echo "   Runtime : $((ELAPSED / 60)) min"
+              echo "   Left    : $((REMAINING / 60)) min"
+              echo "   Web     : ${OMARCHY_PUBLIC_URL}/vnc.html"
+
+            fi
 
             sleep 5
 
+          done
+
+
+      # ============================================================
+      # 18. DIAGNOSTICS
+      # ============================================================
+
+      - name: "📚 Collect diagnostics"
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "${VM_DIR}/logs"
+
+          uname -a \
+            > "${VM_DIR}/logs/kernel.txt" 2>&1
+
+          lscpu \
+            > "${VM_DIR}/logs/cpu.txt" 2>&1
+
+          free -h \
+            > "${VM_DIR}/logs/memory.txt" 2>&1
+
+          df -h \
+            > "${VM_DIR}/logs/disk.txt" 2>&1
+
+          ps aux \
+            > "${VM_DIR}/logs/processes.txt" 2>&1
+
+          ss -lntp \
+            > "${VM_DIR}/logs/network.txt" 2>&1
+
+          if [[ -f "${NOVNC_LOG}" ]]; then
+            cp "${NOVNC_LOG}" \
+              "${VM_DIR}/logs/novnc.log"
           fi
 
-          #
-          # Kill processes if still running.
-          #
+          if [[ -f "${CLOUDFLARE_LOG}" ]]; then
+            cp "${CLOUDFLARE_LOG}" \
+              "${VM_DIR}/logs/cloudflared.log"
+          fi
+
+          if [[ -f "${QEMU_LOG}" ]]; then
+            cp "${QEMU_LOG}" \
+              "${VM_DIR}/logs/qemu.log"
+          fi
 
           if [[ -f "${VM_DIR}/qemu.pid" ]]; then
-
             QEMU_PID="$(cat "${VM_DIR}/qemu.pid")"
 
-            kill "${QEMU_PID}" \
-              >/dev/null \
-              2>&1 || true
+            if kill -0 "$QEMU_PID" 2>/dev/null; then
+              echo "QEMU running: $QEMU_PID" \
+                > "${VM_DIR}/logs/qemu-status.txt"
+            else
+              echo "QEMU stopped: $QEMU_PID" \
+                > "${VM_DIR}/logs/qemu-status.txt"
+            fi
+          fi
 
+
+      # ============================================================
+      # 19. ARTIFACTS
+      # ============================================================
+
+      - name: "📦 Upload diagnostics"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-cloud-${{ github.run_id }}
+          path: |
+            omarchy-vm/omarchy-url.txt
+            omarchy-vm/logs/**
+          if-no-files-found: warn
+          retention-days: 3
+
+
+      # ============================================================
+      # 20. CLEANUP
+      # ============================================================
+
+      - name: "🧹 Cleanup"
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "Stopping Omarchy..."
+
+          if [[ -f "${VM_DIR}/qemu.pid" ]]; then
+            QEMU_PID="$(cat "${VM_DIR}/qemu.pid")"
+
+            kill "$QEMU_PID" 2>/dev/null || true
+
+            sleep 2
+
+            kill -9 "$QEMU_PID" 2>/dev/null || true
           fi
 
           if [[ -f "${VM_DIR}/novnc.pid" ]]; then
-
-            NOVNC_PID="$(cat "${VM_DIR}/novnc.pid")"
-
-            kill "${NOVNC_PID}" \
-              >/dev/null \
-              2>&1 || true
-
+            kill "$(cat "${VM_DIR}/novnc.pid")" \
+              2>/dev/null || true
           fi
 
           if [[ -f "${VM_DIR}/cloudflared.pid" ]]; then
-
-            CLOUDFLARE_PID="$(cat "${VM_DIR}/cloudflared.pid")"
-
-            kill "${CLOUDFLARE_PID}" \
-              >/dev/null \
-              2>&1 || true
-
+            kill "$(cat "${VM_DIR}/cloudflared.pid")" \
+              2>/dev/null || true
           fi
 
-          pkill -f "qemu-system-x86_64.*omarchy" \
-            >/dev/null \
-            2>&1 || true
-
-          pkill -f "websockify.*${NOVNC_PORT}" \
-            >/dev/null \
-            2>&1 || true
-
-          pkill -f "cloudflared tunnel" \
-            >/dev/null \
-            2>&1 || true
+          pkill -f "websockify.*${NOVNC_PORT}" 2>/dev/null || true
+          pkill -f "cloudflared tunnel" 2>/dev/null || true
 
           sync
 
-          echo ""
-          echo "✅ VM stopped."
-          echo "✅ Cloudflare tunnel stopped."
-          echo "✅ noVNC stopped."
-          echo "✅ Workspace cleanup complete."
-          echo ""
+          echo "✅ Cleanup complete."
