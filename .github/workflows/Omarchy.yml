@@ -1,233 +1,582 @@
-name: Windows Cloud Desktop - Apache Guacamole
+name: 🚀 MT5 Cloud Desktop
 
 on:
   workflow_dispatch:
     inputs:
+      resolution:
+        description: "🖥️ Desktop resolution"
+        required: true
+        type: choice
+        default: "1920x1080"
+        options:
+          - "1920x1080"
+          - "1600x900"
+          - "1280x720"
 
-      install_chrome:
-        description: "Install Google Chrome"
-        required: false
+      session_minutes:
+        description: "⏱️ Session lifetime (minutes)"
+        required: true
+        type: choice
+        default: "60"
+        options:
+          - "15"
+          - "30"
+          - "60"
+          - "120"
+          - "180"
+          - "300"
+
+      clean_default_account:
+        description: "🧹 Sanitize the seeded/default MT5 account"
+        required: true
         type: boolean
         default: true
 
-      install_vscode:
-        description: "Install VS Code"
-        required: false
+      enable_tunnel:
+        description: "🌐 Enable browser access via TryCloudflare"
+        required: true
         type: boolean
         default: true
 
-      install_python:
-        description: "Install Python"
-        required: false
+      keep_artifacts:
+        description: "📦 Save MT5 config/logs as workflow artifact"
+        required: true
         type: boolean
         default: true
 
-      session_time:
-        description: "Keep alive minutes"
-        required: false
-        default: "120"
+      image:
+        description: "🐳 MT5 Docker image"
+        required: true
+        type: string
+        default: "ghcr.io/OWNER/mt5-docker:latest"
 
+concurrency:
+  group: mt5-cloud-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CONTAINER_NAME: mt5-cloud
+  MT5_PORT: "3000"
+  MT5_HOST: "127.0.0.1"
+  XDG_RUNTIME_DIR: "/tmp/xdg-runtime"
+  TZ: "UTC"
 
 jobs:
-
-  windows-desktop:
-
-    name: Windows GUI Desktop
-
-    runs-on: windows-2025
-
+  run-mt5:
+    name: 🖥️ Start MetaTrader 5 Cloud Desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(inputs.session_minutes) + 10 }}
 
     steps:
+      # ------------------------------------------------------------
+      # 1. Runner diagnostics
+      # ------------------------------------------------------------
+      - name: 🔍 Runner diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
-    - name: System Information
-      shell: powershell
-      run: |
-        Write-Host "================================"
-        Write-Host " Windows Cloud Desktop"
-        Write-Host "================================"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🖥️ RUNNER"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        systeminfo
+          echo "OS        : $(. /etc/os-release && echo "$PRETTY_NAME")"
+          echo "Kernel    : $(uname -r)"
+          echo "Arch      : $(uname -m)"
+          echo "CPU       : $(nproc)"
+          echo "Memory    : $(free -h | awk '/^Mem:/ {print $2}')"
+          echo "Disk      : $(df -h / | awk 'NR==2 {print $4 " free / " $2}')"
+          echo "Docker    : $(docker --version)"
+          echo "Cloudflared: $(cloudflared --version 2>/dev/null || echo 'not installed')"
 
+          echo
+          echo "📁 Workspace:"
+          pwd
+          df -h .
 
-    # -----------------------------
-    # Install Applications
-    # -----------------------------
+      # ------------------------------------------------------------
+      # 2. Install dependencies
+      # ------------------------------------------------------------
+      - name: 🧰 Install dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
-    - name: Install Chrome
-      if: ${{ inputs.install_chrome }}
-      shell: powershell
-      run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            curl \
+            jq \
+            ca-certificates
 
-        winget install `
-        Google.Chrome `
-        --silent `
-        --accept-package-agreements `
-        --accept-source-agreements
+      # ------------------------------------------------------------
+      # 3. Install cloudflared
+      # ------------------------------------------------------------
+      - name: ☁️ Install Cloudflare Tunnel
+        if: ${{ inputs.enable_tunnel }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
+          if command -v cloudflared >/dev/null 2>&1; then
+            echo "cloudflared already installed."
+            cloudflared --version
+            exit 0
+          fi
 
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o /tmp/cloudflared.deb
 
-    - name: Install VS Code
-      if: ${{ inputs.install_vscode }}
-      shell: powershell
-      run: |
+          sudo dpkg -i /tmp/cloudflared.deb
+          rm -f /tmp/cloudflared.deb
 
-        winget install `
-        Microsoft.VisualStudioCode `
-        --silent `
-        --accept-package-agreements `
-        --accept-source-agreements
+          echo "✅ cloudflared installed:"
+          cloudflared --version
 
+      # ------------------------------------------------------------
+      # 4. Prepare filesystem
+      # ------------------------------------------------------------
+      - name: 📁 Prepare MT5 workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
+          mkdir -p \
+            "$GITHUB_WORKSPACE/mt5_data" \
+            "$GITHUB_WORKSPACE/logs" \
+            "$GITHUB_WORKSPACE/tunnel"
 
-    - name: Install Python
-      if: ${{ inputs.install_python }}
-      shell: powershell
-      run: |
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
 
-        winget install `
-        Python.Python.3.12 `
-        --silent `
-        --accept-package-agreements `
-        --accept-source-agreements
+          echo "Workspace prepared:"
+          tree -L 2 "$GITHUB_WORKSPACE" 2>/dev/null || find "$GITHUB_WORKSPACE" -maxdepth 2 -type d | sort
 
+      # ------------------------------------------------------------
+      # 5. Print selected configuration
+      # ------------------------------------------------------------
+      - name: ⚙️ Display session configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⚙️ MT5 CLOUD CONFIGURATION"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Image              : ${{ inputs.image }}"
+          echo "Resolution         : ${{ inputs.resolution }}"
+          echo "Session            : ${{ inputs.session_minutes }} minutes"
+          echo "Clean default acct : ${{ inputs.clean_default_account }}"
+          echo "Web access         : ${{ inputs.enable_tunnel }}"
+          echo "Artifacts          : ${{ inputs.keep_artifacts }}"
+          echo "Container          : ${CONTAINER_NAME}"
+          echo "Port               : ${MT5_PORT}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # -----------------------------
-    # Enable RDP
-    # -----------------------------
+      # ------------------------------------------------------------
+      # 6. Pull MT5 image
+      # ------------------------------------------------------------
+      - name: 🐳 Pull MT5 image
+        shell: bash
+        env:
+          MT5_IMAGE: ${{ inputs.image }}
+        run: |
+          set -Eeuo pipefail
 
-    - name: Enable Remote Desktop
-      shell: powershell
-      run: |
+          echo "📦 Pulling:"
+          echo "   ${MT5_IMAGE}"
 
-        Set-ItemProperty `
-        -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-        -Name "fDenyTSConnections" `
-        -Value 0
+          docker pull "${MT5_IMAGE}"
 
+          echo
+          echo "✅ Image ready."
+          docker image inspect "${MT5_IMAGE}" \
+            --format='Image: {{.RepoTags}} | ID: {{.Id}} | Size: {{.Size}} bytes'
 
-        Enable-NetFirewallRule `
-        -DisplayGroup "Remote Desktop"
+      # ------------------------------------------------------------
+      # 7. Start MT5
+      # ------------------------------------------------------------
+      - name: ▶️ Start MetaTrader 5
+        shell: bash
+        env:
+          MT5_IMAGE: ${{ inputs.image }}
+          MT5_RESOLUTION: ${{ inputs.resolution }}
+          MT5_CLEAN_DEFAULT: ${{ inputs.clean_default_account }}
+        run: |
+          set -Eeuo pipefail
 
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📈 STARTING METATRADER 5"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          CLEAN_VALUE="0"
+          if [[ "${MT5_CLEAN_DEFAULT}" == "true" ]]; then
+            CLEAN_VALUE="1"
+          fi
 
-    # -----------------------------
-    # Install Docker
-    # For Guacamole
-    # -----------------------------
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
-    - name: Install Docker Desktop
-      shell: powershell
-      run: |
+          docker run \
+            --detach \
+            --name "${CONTAINER_NAME}" \
+            --restart=no \
+            --shm-size=2g \
+            --tmpfs /tmp:exec \
+            --tmpfs /run:exec \
+            --env "DISPLAY_RESOLUTION=${MT5_RESOLUTION}" \
+            --env "MT5_CLEAN_DEFAULT_ACCOUNT=${CLEAN_VALUE}" \
+            --env "TZ=${TZ}" \
+            --volume "${GITHUB_WORKSPACE}/mt5_data:/config" \
+            --publish "${MT5_HOST}:${MT5_PORT}:3000" \
+            "${MT5_IMAGE}"
 
-        winget install `
-        Docker.DockerDesktop `
-        --silent `
-        --accept-package-agreements `
-        --accept-source-agreements
+          echo
+          echo "✅ Container started:"
+          docker ps \
+            --filter "name=${CONTAINER_NAME}" \
+            --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Image}}'
 
+      # ------------------------------------------------------------
+      # 8. Wait for MT5 web endpoint
+      # ------------------------------------------------------------
+      - name: ❤️ Wait for MT5 health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
+          echo "⏳ Waiting for MT5/KasmVNC web endpoint..."
 
-    # -----------------------------
-    # Start Guacamole Stack
-    # -----------------------------
+          READY=0
 
-    - name: Create Guacamole Docker Compose
-      shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path guacamole | Out-Null
-        Set-Location guacamole
+          for i in $(seq 1 90); do
+            if curl \
+              --silent \
+              --show-error \
+              --fail \
+              --max-time 3 \
+              "http://${MT5_HOST}:${MT5_PORT}/" \
+              >/dev/null 2>&1; then
 
-        $compose = @(
-          'services:'
-          '  guacd:'
-          '    image: guacamole/guacd:1.6.0'
-          '    container_name: guacd'
-          '    restart: unless-stopped'
-          ''
-          '  postgres:'
-          '    image: postgres:16'
-          '    container_name: guacamole-postgres'
-          '    restart: unless-stopped'
-          '    environment:'
-          '      POSTGRES_DB: guacamole'
-          '      POSTGRES_USER: guacamole'
-          '      POSTGRES_PASSWORD: guacpassword'
-          '    volumes:'
-          '      - guacamole_db:/var/lib/postgresql/data'
-          ''
-          '  guacamole:'
-          '    image: guacamole/guacamole:1.6.0'
-          '    container_name: guacamole'
-          '    restart: unless-stopped'
-          '    depends_on:'
-          '      - guacd'
-          '      - postgres'
-          '    ports:'
-          '      - "8080:8080"'
-          '    environment:'
-          '      GUACD_HOSTNAME: guacd'
-          '      POSTGRESQL_HOSTNAME: postgres'
-          '      POSTGRESQL_DATABASE: guacamole'
-          '      POSTGRESQL_USER: guacamole'
-          '      POSTGRESQL_PASSWORD: guacpassword'
-          ''
-          'volumes:'
-          '  guacamole_db:'
-        )
+              READY=1
+              echo "✅ MT5 web endpoint is ready after ${i} checks."
+              break
+            fi
 
-        $compose | Set-Content -Path docker-compose.yml -Encoding UTF8
+            if (( i % 10 == 0 )); then
+              echo "   Still waiting... (${i}/90)"
+              docker logs --tail 20 "${CONTAINER_NAME}" || true
+            fi
 
-        Write-Host "Created:"
-        Get-Content docker-compose.yml
+            sleep 2
+          done
 
-    # -----------------------------
-    # Start Services
-    # -----------------------------
+          if [[ "${READY}" != "1" ]]; then
+            echo
+            echo "❌ MT5 did not become ready."
+            echo
+            echo "──── Docker status ────"
+            docker ps -a --filter "name=${CONTAINER_NAME}"
+            echo
+            echo "──── Docker logs ────"
+            docker logs "${CONTAINER_NAME}" || true
+            exit 1
+          fi
 
-    - name: Start Guacamole
+      # ------------------------------------------------------------
+      # 9. Start TryCloudflare tunnel
+      # ------------------------------------------------------------
+      - name: 🌐 Start browser access tunnel
+        if: ${{ inputs.enable_tunnel }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
-      shell: powershell
-      run: |
+          TUNNEL_LOG="$GITHUB_WORKSPACE/tunnel/cloudflared.log"
+          TUNNEL_PID_FILE="$GITHUB_WORKSPACE/tunnel/cloudflared.pid"
+          TUNNEL_URL_FILE="$GITHUB_WORKSPACE/tunnel/url.txt"
 
-        cd guacamole
+          : > "${TUNNEL_LOG}"
+          rm -f "${TUNNEL_URL_FILE}" "${TUNNEL_PID_FILE}"
 
-        docker compose up -d
+          echo "☁️ Starting TryCloudflare..."
+          echo "   Target: http://${MT5_HOST}:${MT5_PORT}"
 
+          nohup \
+            cloudflared tunnel \
+              --no-autoupdate \
+              --url "http://${MT5_HOST}:${MT5_PORT}" \
+              >"${TUNNEL_LOG}" 2>&1 &
 
+          TUNNEL_PID=$!
+          echo "${TUNNEL_PID}" > "${TUNNEL_PID_FILE}"
 
-    # -----------------------------
-    # Show Info
-    # -----------------------------
+          echo "Tunnel PID: ${TUNNEL_PID}"
 
-    - name: Desktop Information
+          echo "⏳ Waiting for public URL..."
 
-      shell: powershell
-      run: |
+          FOUND_URL=""
 
-        Write-Host ""
-        Write-Host "================================"
-        Write-Host "Guacamole:"
-        Write-Host "http://localhost:8080/guacamole"
-        Write-Host ""
-        Write-Host "Windows RDP:"
-        Write-Host "localhost:3389"
-        Write-Host "================================"
+          for i in $(seq 1 60); do
+            if [[ -f "${TUNNEL_LOG}" ]]; then
+              FOUND_URL="$(
+                grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+                  "${TUNNEL_LOG}" \
+                  | head -n 1 \
+                  || true
+              )"
+            fi
 
+            if [[ -n "${FOUND_URL}" ]]; then
+              break
+            fi
 
+            if (( i % 5 == 0 )); then
+              echo "   Waiting for tunnel URL... (${i}/60)"
+            fi
 
-    # -----------------------------
-    # Keep Alive
-    # -----------------------------
+            sleep 2
+          done
 
-    - name: Keep Session Alive
+          if [[ -z "${FOUND_URL}" ]]; then
+            echo
+            echo "❌ Could not obtain TryCloudflare URL."
+            echo
+            echo "──── cloudflared log ────"
+            cat "${TUNNEL_LOG}" || true
+            exit 1
+          fi
 
-      shell: powershell
-      run: |
+          printf '%s\n' "${FOUND_URL}" > "${TUNNEL_URL_FILE}"
 
-        $minutes = "${{ inputs.session_time }}"
+          echo "✅ Public URL:"
+          echo "${FOUND_URL}"
 
-        Write-Host "Keeping alive for $minutes minutes"
+      # ------------------------------------------------------------
+      # 10. Get Docker/runtime metadata
+      # ------------------------------------------------------------
+      - name: 📊 Collect runtime information
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
-        Start-Sleep `
-        -Seconds ($minutes * 60)
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 RUNTIME INFORMATION"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          echo "Container:"
+          docker inspect "${CONTAINER_NAME}" \
+            --format='Name: {{.Name}}
+Image: {{.Config.Image}}
+Started: {{.State.StartedAt}}
+Status: {{.State.Status}}
+ExitCode: {{.State.ExitCode}}'
+
+          echo
+          echo "Port:"
+          docker port "${CONTAINER_NAME}" || true
+
+          echo
+          echo "Disk:"
+          df -h /
+
+          echo
+          echo "Memory:"
+          free -h
+
+      # ------------------------------------------------------------
+      # 11. Print beautiful connection panel
+      # ------------------------------------------------------------
+      - name: 🔐 Display connection information
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          PUBLIC_URL="Not enabled"
+
+          if [[ "${{ inputs.enable_tunnel }}" == "true" ]]; then
+            PUBLIC_URL="$(cat "$GITHUB_WORKSPACE/tunnel/url.txt" 2>/dev/null || echo "Unavailable")"
+          fi
+
+          {
+            echo
+            echo "╔════════════════════════════════════════════════════════════╗"
+            echo "║                  🚀 MT5 CLOUD DESKTOP                     ║"
+            echo "╠════════════════════════════════════════════════════════════╣"
+            echo "║                                                            ║"
+            printf "║  📈 Application : MetaTrader 5                            ║\n"
+            printf "║  🖥️  Resolution  : %-39s║\n" "${{ inputs.resolution }}"
+            printf "║  ⏱️  Session     : %-39s║\n" "${{ inputs.session_minutes }} minutes"
+            printf "║  📦 Container   : %-39s║\n" "${CONTAINER_NAME}"
+            printf "║                                                            ║\n"
+            echo "║  🔐 LOCAL ACCESS                                            ║"
+            echo "║  http://127.0.0.1:3000                                    ║"
+            echo "║                                                            ║"
+            echo "║  🌐 BROWSER ACCESS                                          ║"
+            printf "║  %-58s║\n" "${PUBLIC_URL}"
+            echo "║                                                            ║"
+            echo "╚════════════════════════════════════════════════════════════╝"
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo "## 🚀 MT5 Cloud Desktop" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🖥️ Resolution | \`${{ inputs.resolution }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ⏱️ Session | \`${{ inputs.session_minutes }} min\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 📦 Container | \`${CONTAINER_NAME}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🔐 Local URL | \`http://127.0.0.1:3000\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🌐 Public URL | ${PUBLIC_URL} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ⚠️ TryCloudflare Quick Tunnels are intended for development/testing." >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------
+      # 12. Session countdown
+      # ------------------------------------------------------------
+      - name: ⏳ Keep MT5 session alive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          TOTAL_SECONDS=$(( ${{ inputs.session_minutes }} * 60 ))
+          START_TIME=$(date +%s)
+          END_TIME=$(( START_TIME + TOTAL_SECONDS ))
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⏳ SESSION ACTIVE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Duration: ${{ inputs.session_minutes }} minutes"
+          echo
+
+          while true; do
+            NOW=$(date +%s)
+            REMAINING=$(( END_TIME - NOW ))
+
+            if (( REMAINING <= 0 )); then
+              break
+            fi
+
+            ELAPSED=$(( NOW - START_TIME ))
+            MINUTES=$(( REMAINING / 60 ))
+            SECONDS=$(( REMAINING % 60 ))
+
+            if (( ELAPSED % 30 == 0 )); then
+              STATUS="$(docker inspect -f '{{.State.Status}}' "${CONTAINER_NAME}" 2>/dev/null || echo "unknown")"
+
+              echo "[$(date -u '+%H:%M:%S UTC')] ⏱️ ${MINUTES}m ${SECONDS}s remaining | MT5: ${STATUS}"
+            fi
+
+            sleep 5
+          done
+
+          echo
+          echo "⌛ Session time reached."
+
+      # ------------------------------------------------------------
+      # 13. Capture final diagnostics
+      # ------------------------------------------------------------
+      - name: 🧾 Collect MT5 diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$GITHUB_WORKSPACE/logs"
+
+          docker ps -a > "$GITHUB_WORKSPACE/logs/docker-ps.txt"
+          docker inspect "${CONTAINER_NAME}" \
+            > "$GITHUB_WORKSPACE/logs/container-inspect.json" 2>&1
+
+          docker logs "${CONTAINER_NAME}" \
+            > "$GITHUB_WORKSPACE/logs/mt5-container.log" 2>&1
+
+          docker stats "${CONTAINER_NAME}" \
+            --no-stream \
+            > "$GITHUB_WORKSPACE/logs/docker-stats.txt" 2>&1
+
+          if [[ -f "$GITHUB_WORKSPACE/tunnel/cloudflared.log" ]]; then
+            cp \
+              "$GITHUB_WORKSPACE/tunnel/cloudflared.log" \
+              "$GITHUB_WORKSPACE/logs/cloudflared.log"
+          fi
+
+          echo "Diagnostics collected."
+
+      # ------------------------------------------------------------
+      # 14. Save artifacts
+      # ------------------------------------------------------------
+      - name: 📦 Upload MT5 artifacts
+        if: ${{ always() && inputs.keep_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt5-cloud-${{ github.run_id }}
+          path: |
+            mt5_data/
+            logs/
+            tunnel/
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 6
+
+      # ------------------------------------------------------------
+      # 15. Final cleanup
+      # ------------------------------------------------------------
+      - name: 🧹 Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 CLEANUP"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [[ -f "$GITHUB_WORKSPACE/tunnel/cloudflared.pid" ]]; then
+            TUNNEL_PID="$(cat "$GITHUB_WORKSPACE/tunnel/cloudflared.pid")"
+
+            if kill -0 "${TUNNEL_PID}" 2>/dev/null; then
+              echo "Stopping cloudflared (PID ${TUNNEL_PID})..."
+              kill "${TUNNEL_PID}" 2>/dev/null || true
+            fi
+          fi
+
+          if docker ps -q --filter "name=^${CONTAINER_NAME}$" | grep -q .; then
+            echo "Stopping MT5 container..."
+            docker stop -t 10 "${CONTAINER_NAME}" || true
+          fi
+
+          docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+
+          echo
+          echo "✅ Cleanup complete."
+
+      # ------------------------------------------------------------
+      # 16. Final summary
+      # ------------------------------------------------------------
+      - name: ✅ Final summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          {
+            echo
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📋 FINAL SUMMARY"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo
+            echo "Workflow      : $GITHUB_WORKFLOW"
+            echo "Run ID        : $GITHUB_RUN_ID"
+            echo "Repository    : $GITHUB_REPOSITORY"
+            echo "Runner        : $RUNNER_NAME"
+            echo "Resolution    : ${{ inputs.resolution }}"
+            echo "Session       : ${{ inputs.session_minutes }} minutes"
+            echo "Tunnel        : ${{ inputs.enable_tunnel }}"
+            echo "Artifacts     : ${{ inputs.keep_artifacts }}"
+            echo
+            echo "MT5 session has ended and resources were cleaned up."
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
