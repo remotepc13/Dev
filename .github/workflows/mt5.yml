@@ -1,136 +1,97 @@
-name: "🚀 MT5 Cloud Desktop"
-
-run-name: "MT5 • ${{ inputs.resolution }} • ${{ inputs.session_minutes }} min"
+name: Linux Web Desktop
 
 on:
   workflow_dispatch:
     inputs:
-      resolution:
-        description: "Desktop resolution"
-        required: true
-        type: choice
-        options:
-          - "1920x1080"
-          - "1600x900"
-          - "1280x720"
-        default: "1920x1080"
+      workspace_name:
+        description: "Workspace name"
+        required: false
+        default: "adiban-desktop"
+        type: string
 
-      session_minutes:
-        description: "Session duration (maximum 300 minutes)"
-        required: true
-        type: choice
-        options:
-          - "15"
-          - "30"
-          - "60"
-          - "120"
-          - "180"
-          - "300"
+      keep_alive_minutes:
+        description: "Keep desktop alive (minutes)"
+        required: false
         default: "60"
+        type: string
 
-      enable_tunnel:
-        description: "Expose KasmVNC through Cloudflare Quick Tunnel"
-        required: true
-        type: boolean
+      desktop_image:
+        description: "Webtop image"
+        required: false
+        default: "lscr.io/linuxserver/webtop:ubuntu-xfce"
+        type: string
+
+      install_dev_tools:
+        description: "Install development tools"
+        required: false
         default: true
-
-      save_artifacts:
-        description: "Upload runtime diagnostics"
-        required: true
         type: boolean
+
+      install_extra_apps:
+        description: "Install extra desktop applications"
+        required: false
         default: true
-
-      clean_workspace:
-        description: "Delete session-local MT5 data before start"
-        required: true
         type: boolean
-        default: false
+
+      use_cloudflare:
+        description: "Create public TryCloudflare URL"
+        required: false
+        default: true
+        type: boolean
+
+      timezone:
+        description: "Desktop timezone"
+        required: false
+        default: "Europe/Berlin"
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: mt5-cloud-desktop
-  cancel-in-progress: false
-
-env:
-  # ------------------------------------------------------------
-  # Container
-  # ------------------------------------------------------------
-  CONTAINER_NAME: mt5-cloud
-
-  # Current upstream release 2.3
-  MT5_IMAGE: ghcr.io/gmag11/metatrader5-docker:2.3
-
-  # ------------------------------------------------------------
-  # Network
-  # ------------------------------------------------------------
-  # Keep both ports private on the GitHub runner.
-  # Only KasmVNC :3000 is exposed through Cloudflare.
-  MT5_WEB_BIND: 127.0.0.1
-  MT5_WEB_PORT: 3000
-
-  MT5_API_BIND: 127.0.0.1
-  MT5_API_PORT: 8001
-
-  # ------------------------------------------------------------
-  # KasmVNC login
-  # Demo-only password.
-  # Do NOT use broker credentials here.
-  # ------------------------------------------------------------
-  MT5_WEB_USER: trader
-  MT5_WEB_PASSWORD: "MT5-Demo-2026-StrongPassword!"
-
-  # ------------------------------------------------------------
-  # Runtime timeouts
-  # ------------------------------------------------------------
-  MT5_TCP_TIMEOUT: 120
-  MT5_HTTP_TIMEOUT: 180
-  MT5_TUNNEL_TIMEOUT: 120
-  MT5_CHECK_INTERVAL: 3
+  group: web-desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  mt5:
-    name: "MT5 Cloud Desktop"
 
-    # Current GitHub-hosted Ubuntu runner requested
-    runs-on: ubuntu-24.04
-
-    # Safety margin for:
-    # image pull + Wine/MT5 first-run + session
+  desktop:
+    name: Linux Web Desktop
+    runs-on: ubuntu-latest
     timeout-minutes: 360
+
+    env:
+      WORKSPACE_NAME: ${{ inputs.workspace_name }}
+      KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+      DESKTOP_IMAGE: ${{ inputs.desktop_image }}
+      TZ: ${{ inputs.timezone }}
+      WEBTOP_PORT: 3001
+      WEBTOP_CONTAINER_PORT: 3001
+      WORKSPACE_DIR: ${{ github.workspace }}/workspace
 
     steps:
 
-      # ==========================================================
-      # 1. Checkout
-      # ==========================================================
-      - name: "📥 Checkout"
-        uses: actions/checkout@v5
+      # ------------------------------------------------------------
+      # 1. Runner information
+      # ------------------------------------------------------------
 
-      # ==========================================================
-      # 2. Validate files BEFORE touching Docker
-      # ==========================================================
-      - name: "🔎 Validate"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show runner information
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -euo pipefail
 
-          SCRIPT="${GITHUB_WORKSPACE}/mt5.sh"
-
-          test -f "${SCRIPT}"
-
-          chmod +x "${SCRIPT}"
-
-          echo "============================================================"
-          echo "🔎 Environment validation"
-          echo "============================================================"
-
-          echo "Bash:"
-          bash --version | head -n 1
+          echo "========================================"
+          echo " GitHub Web Desktop"
+          echo "========================================"
 
           echo
-          echo "Runner:"
+          echo "OS:"
+          cat /etc/os-release
+
+          echo
+          echo "Kernel:"
           uname -a
 
           echo
@@ -146,64 +107,485 @@ jobs:
           free -h
 
           echo
+          echo "Disk:"
+          df -h /
+
+          echo
           echo "Docker:"
-          docker --version
+          docker version
 
           echo
-          echo "Bash syntax check:"
-          bash -n "${SCRIPT}"
+          echo "Docker Compose:"
+          docker compose version || true
+
+      # ------------------------------------------------------------
+      # 2. Prepare workspace
+      # ------------------------------------------------------------
+
+      - name: Prepare workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${WORKSPACE_DIR}"
+
+          chmod 777 "${WORKSPACE_DIR}"
+
+          echo "Workspace:"
+          ls -la "${WORKSPACE_DIR}"
+
+      # ------------------------------------------------------------
+      # 3. Pull latest Webtop
+      # ------------------------------------------------------------
+
+      - name: Pull Webtop image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Pulling:"
+          echo "${DESKTOP_IMAGE}"
+
+          docker pull "${DESKTOP_IMAGE}"
 
           echo
-          echo "✅ mt5.sh syntax is valid."
+          echo "Image:"
+          docker image inspect "${DESKTOP_IMAGE}" \
+            --format '{{.RepoTags}}'
 
-      # ==========================================================
-      # 3. Runtime
-      # ==========================================================
-      - name: "🚀 Start MT5"
-        shell: bash
-        env:
-          MT5_RESOLUTION: ${{ inputs.resolution }}
-          MT5_SESSION_MINUTES: ${{ inputs.session_minutes }}
-          MT5_ENABLE_TUNNEL: ${{ inputs.enable_tunnel }}
-          MT5_SAVE_ARTIFACTS: ${{ inputs.save_artifacts }}
-          MT5_CLEAN_WORKSPACE: ${{ inputs.clean_workspace }}
-        run: |
-          set -Eeuo pipefail
-          "${GITHUB_WORKSPACE}/mt5.sh"
+      # ------------------------------------------------------------
+      # 4. Start Webtop
+      # ------------------------------------------------------------
 
-      # ==========================================================
-      # 4. Diagnostics
-      # ==========================================================
-      - name: "📦 Upload diagnostics"
-        if: ${{ always() && inputs.save_artifacts }}
-        uses: actions/upload-artifact@v5
-        with:
-          name: mt5-cloud-diagnostics-${{ github.run_id }}
-
-          path: |
-            logs/**
-            tunnel/**
-            .mt5-runtime/**
-
-          if-no-files-found: warn
-          retention-days: 3
-
-      # ==========================================================
-      # 5. Final status
-      # ==========================================================
-      - name: "🏁 Final status"
-        if: ${{ always() }}
+      - name: Start Webtop
         shell: bash
         run: |
-          echo "============================================================"
-          echo "🏁 MT5 Cloud Desktop workflow finished"
-          echo "============================================================"
+          set -euo pipefail
 
-          echo "Run ID      : ${{ github.run_id }}"
-          echo "Resolution  : ${{ inputs.resolution }}"
-          echo "Duration    : ${{ inputs.session_minutes }} minutes"
-          echo "Tunnel      : ${{ inputs.enable_tunnel }}"
-          echo "Artifacts   : ${{ inputs.save_artifacts }}"
-          echo "Clean data  : ${{ inputs.clean_workspace }}"
+          docker rm -f "${WORKSPACE_NAME}" 2>/dev/null || true
 
-          echo "============================================================"
+          docker run -d \
+            --name "${WORKSPACE_NAME}" \
+            --hostname "${WORKSPACE_NAME}" \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ="${TZ}" \
+            -e TITLE="Adiban Linux Desktop" \
+            -p "127.0.0.1:${WEBTOP_PORT}:${WEBTOP_CONTAINER_PORT}" \
+            -v "${WORKSPACE_DIR}:/config/workspace" \
+            --shm-size="1gb" \
+            --restart unless-stopped \
+            "${DESKTOP_IMAGE}"
+
+          echo
+          echo "Container started:"
+          docker ps --filter "name=${WORKSPACE_NAME}"
+
+      # ------------------------------------------------------------
+      # 5. Wait for Webtop
+      # ------------------------------------------------------------
+
+      - name: Wait for Webtop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Waiting for Webtop..."
+
+          for i in $(seq 1 60); do
+
+            if curl \
+              --silent \
+              --show-error \
+              --fail \
+              --insecure \
+              "https://127.0.0.1:${WEBTOP_PORT}/" \
+              >/dev/null 2>&1; then
+
+              echo "Webtop is ready."
+              exit 0
+            fi
+
+            echo "Attempt ${i}/60..."
+            sleep 3
+          done
+
+          echo "Webtop failed to start."
+
+          docker ps -a
+          docker logs --tail 200 "${WORKSPACE_NAME}"
+
+          exit 1
+
+      # ------------------------------------------------------------
+      # 6. Install useful tools inside Webtop
+      # ------------------------------------------------------------
+
+      - name: Install development tools
+        if: ${{ inputs.install_dev_tools }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec "${WORKSPACE_NAME}" bash -lc '
+            set -e
+
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update
+
+            apt-get install -y \
+              git \
+              curl \
+              wget \
+              unzip \
+              zip \
+              jq \
+              vim \
+              nano \
+              htop \
+              tmux \
+              tree \
+              ripgrep \
+              fd-find \
+              build-essential \
+              python3 \
+              python3-pip \
+              python3-venv
+
+            apt-get clean
+
+            rm -rf /var/lib/apt/lists/*
+          '
+
+      # ------------------------------------------------------------
+      # 7. Install extra GUI applications
+      # ------------------------------------------------------------
+
+      - name: Install extra applications
+        if: ${{ inputs.install_extra_apps }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec "${WORKSPACE_NAME}" bash -lc '
+            set -e
+
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update
+
+            apt-get install -y \
+              file \
+              p7zip-full \
+              xz-utils \
+              ca-certificates \
+              dbus-x11 \
+              x11-utils
+
+            apt-get clean
+
+            rm -rf /var/lib/apt/lists/*
+          '
+
+      # ------------------------------------------------------------
+      # 8. Desktop diagnostics
+      # ------------------------------------------------------------
+
+      - name: Verify desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo " Desktop Information"
+          echo "========================================"
+
+          docker exec "${WORKSPACE_NAME}" bash -lc '
+            echo
+            echo "OS:"
+            cat /etc/os-release
+
+            echo
+            echo "Kernel:"
+            uname -a
+
+            echo
+            echo "Architecture:"
+            uname -m
+
+            echo
+            echo "User:"
+            id
+
+            echo
+            echo "Desktop:"
+            echo "${XDG_CURRENT_DESKTOP:-unknown}"
+
+            echo
+            echo "Firefox:"
+            firefox --version 2>/dev/null || true
+
+            echo
+            echo "Python:"
+            python3 --version 2>/dev/null || true
+
+            echo
+            echo "Git:"
+            git --version
+          '
+
+      # ------------------------------------------------------------
+      # 9. Install Cloudflare Tunnel
+      # ------------------------------------------------------------
+
+      - name: Install cloudflared
+        if: ${{ inputs.use_cloudflare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCH="$(dpkg --print-architecture)"
+
+          case "${ARCH}" in
+            amd64)
+              CF_ARCH="amd64"
+              ;;
+            arm64)
+              CF_ARCH="arm64"
+              ;;
+            *)
+              echo "Unsupported architecture: ${ARCH}"
+              exit 1
+              ;;
+          esac
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --output cloudflared.deb \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb"
+
+          sudo dpkg -i cloudflared.deb
+
+          rm -f cloudflared.deb
+
+          cloudflared --version
+
+      # ------------------------------------------------------------
+      # 10. Start Cloudflare Quick Tunnel
+      # ------------------------------------------------------------
+
+      - name: Start public tunnel
+        if: ${{ inputs.use_cloudflare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f cloudflare.log
+          rm -f cloudflare.url
+
+          echo "Starting Cloudflare Quick Tunnel..."
+
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url "https://127.0.0.1:${WEBTOP_PORT}" \
+            --no-tls-verify \
+            > cloudflare.log 2>&1 &
+
+          echo $! > cloudflare.pid
+
+          echo "Waiting for public URL..."
+
+          for i in $(seq 1 60); do
+
+            URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' cloudflare.log | head -n 1 || true)"
+
+            if [ -n "${URL}" ]; then
+              echo "${URL}" > cloudflare.url
+
+              echo
+              echo "========================================"
+              echo " PUBLIC DESKTOP"
+              echo "========================================"
+              echo
+              echo "${URL}"
+              echo
+              echo "========================================"
+
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ ! -s cloudflare.url ]; then
+            echo "Cloudflare tunnel failed."
+
+            echo
+            echo "Cloudflare log:"
+            cat cloudflare.log
+
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # 11. Publish URL to GitHub Summary
+      # ------------------------------------------------------------
+
+      - name: Publish desktop information
+        if: ${{ inputs.use_cloudflare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="$(cat cloudflare.url)"
+
+          {
+            echo "# 🖥️ Linux Web Desktop"
+            echo
+            echo "## 🌐 Desktop URL"
+            echo
+            echo "**${URL}**"
+            echo
+            echo "## 🐧 Environment"
+            echo
+            echo "- Runner: \`ubuntu-latest\`"
+            echo "- Desktop: Ubuntu XFCE"
+            echo "- Web Desktop: LinuxServer Webtop"
+            echo "- Display: KasmVNC / Selkies"
+            echo "- Timezone: \`${TZ}\`"
+            echo "- Workspace: \`${WORKSPACE_NAME}\`"
+            echo
+            echo "## ⏱️ Session"
+            echo
+            echo "Requested duration: **${KEEP_ALIVE_MINUTES} minutes**"
+            echo
+            echo "> ⚠️ This is a temporary GitHub-hosted runner."
+            echo "> The environment disappears when the workflow ends."
+            echo
+            echo "## 🔐 Security"
+            echo
+            echo "The Webtop port is bound only to localhost."
+            echo "External access is provided through Cloudflare Tunnel."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # ------------------------------------------------------------
+      # 12. Keep session alive
+      # ------------------------------------------------------------
+
+      - name: Keep desktop alive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MINUTES="${KEEP_ALIVE_MINUTES}"
+
+          if ! [[ "${MINUTES}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid keep_alive_minutes: ${MINUTES}"
+            exit 1
+          fi
+
+          if [ "${MINUTES}" -lt 1 ]; then
+            echo "keep_alive_minutes must be >= 1"
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo " Desktop is running"
+          echo "========================================"
+
+          if [ -f cloudflare.url ]; then
+            echo
+            echo "URL:"
+            cat cloudflare.url
+          fi
+
+          echo
+          echo "Keep alive: ${MINUTES} minutes"
+          echo
+
+          END_TIME=$(( $(date +%s) + MINUTES * 60 ))
+
+          while true; do
+
+            NOW="$(date +%s)"
+
+            if [ "${NOW}" -ge "${END_TIME}" ]; then
+              break
+            fi
+
+            REMAINING=$(( (END_TIME - NOW) / 60 ))
+
+            echo "[$(date '+%H:%M:%S')] Remaining: ${REMAINING} min"
+
+            sleep 30
+
+          done
+
+          echo
+          echo "Keep-alive period completed."
+
+      # ------------------------------------------------------------
+      # 13. Diagnostics
+      # ------------------------------------------------------------
+
+      - name: Collect diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "========================================"
+          echo " Docker Containers"
+          echo "========================================"
+
+          docker ps -a
+
+          echo
+          echo "========================================"
+          echo " Webtop Logs"
+          echo "========================================"
+
+          docker logs \
+            --tail 300 \
+            "${WORKSPACE_NAME}" || true
+
+          echo
+          echo "========================================"
+          echo " Cloudflare Logs"
+          echo "========================================"
+
+          if [ -f cloudflare.log ]; then
+            tail -n 200 cloudflare.log
+          fi
+
+      # ------------------------------------------------------------
+      # 14. Cleanup
+      # ------------------------------------------------------------
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "Stopping Cloudflare..."
+
+          if [ -f cloudflare.pid ]; then
+            kill "$(cat cloudflare.pid)" 2>/dev/null || true
+          fi
+
+          echo "Stopping Webtop..."
+
+          docker rm -f "${WORKSPACE_NAME}" 2>/dev/null || true
+
+          echo
+          echo "Docker disk usage:"
+          docker system df || true
+
+          echo
+          echo "Cleanup complete."
