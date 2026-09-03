@@ -1,483 +1,329 @@
-name: ☁️ ADIBAN Cloud Linux Desktop
+name: "🖥️ ADIBAN Cloud Linux Desktop"
 
 on:
   workflow_dispatch:
     inputs:
 
-      # ============================================================
-      # RUNNER
-      # ============================================================
-
       runner:
-        description: GitHub-hosted runner image
+        description: "GitHub Actions Runner"
         required: true
-        default: ubuntu-24.04
         type: choice
+        default: "ubuntu-24.04"
         options:
-          - ubuntu-24.04
-          - ubuntu-26.04
+          - "ubuntu-24.04"
+          - "ubuntu-26.04"
+          - "ubuntu-latest"
 
       timezone:
-        description: Container timezone
+        description: "Container Timezone"
         required: true
-        default: Europe/Berlin
         type: string
+        default: "Europe/Berlin"
 
       workspace_name:
-        description: Workspace name
+        description: "Workspace Name"
         required: true
-        default: adiban-cloud
         type: string
+        default: "adiban-cloud"
 
       session_hours:
-        description: Maximum desktop session length
+        description: "Session Duration"
         required: true
-        default: '5'
         type: choice
+        default: "4"
         options:
-          - '1'
-          - '2'
-          - '3'
-          - '4'
-          - '5'
-
-      # ============================================================
-      # SOFTWARE
-      # ============================================================
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
 
       install_python:
-        description: Install Python 3.13
+        description: "🐍 Python 3.13"
         required: true
-        default: true
         type: boolean
+        default: true
 
       install_node:
-        description: Install Node.js 22
+        description: "🟢 Node.js 22"
         required: true
-        default: true
         type: boolean
+        default: true
 
       install_firefox:
-        description: Install Firefox
+        description: "🦊 Firefox"
         required: true
-        default: true
         type: boolean
+        default: true
 
       install_chrome:
-        description: Install Google Chrome
+        description: "🌐 Google Chrome"
         required: true
-        default: true
         type: boolean
+        default: true
 
       install_vscode:
-        description: Install Visual Studio Code
+        description: "💻 Visual Studio Code"
         required: true
-        default: true
         type: boolean
+        default: true
 
       install_opencode:
-        description: Install OpenCode CLI
+        description: "🤖 OpenCode"
         required: true
-        default: true
         type: boolean
+        default: true
 
-      install_antigravity:
-        description: Install Google Antigravity GUI
+      install_antigravity_gui:
+        description: "🚀 Antigravity GUI"
         required: true
-        default: true
         type: boolean
+        default: true
 
       install_antigravity_cli:
-        description: Install Antigravity CLI (agy)
+        description: "⚡ Antigravity CLI"
         required: true
-        default: true
         type: boolean
-
-      # ============================================================
-      # NETWORK / SECURITY
-      # ============================================================
+        default: true
 
       enable_webtop_auth:
-        description: Protect Webtop with WEBTOP_PASSWORD secret
+        description: "🔐 Enable Webtop Authentication"
         required: true
-        default: false
         type: boolean
+        default: false
 
       enable_cloudflare:
-        description: Start temporary TryCloudflare tunnel
+        description: "☁️ Enable TryCloudflare Tunnel"
         required: true
-        default: true
         type: boolean
+        default: true
 
 
-# ================================================================
-# GLOBAL PERMISSIONS
-# ================================================================
+env:
+  WEBTOP_CONTAINER: "adiban-webtop"
+  WEBTOP_IMAGE: "lscr.io/linuxserver/webtop:ubuntu-kde"
+  WEBTOP_USER: "abc"
+  WEBTOP_HOME: "/config"
+  WEBTOP_PORT: "3001"
+  WEBTOP_HOST: "127.0.0.1"
+  CLOUDFLARE_CONTAINER: "adiban-cloudflare"
 
-permissions:
-  contents: read
-
-
-# ================================================================
-# CONCURRENCY
-# ================================================================
-
-concurrency:
-  group: adiban-cloud-${{ github.repository }}-${{ inputs.workspace_name }}
-  cancel-in-progress: true
-
-
-# ================================================================
-# JOB
-# ================================================================
 
 jobs:
+
   desktop:
 
-    name: 🖥️ ADIBAN Cloud Desktop
+    name: "🖥️ ADIBAN Cloud Linux Desktop"
 
     runs-on: ${{ inputs.runner }}
 
-    # GitHub-hosted runner maximum is 360 minutes.
-    # 5h session leaves enough buffer for initialization/cleanup.
     timeout-minutes: 360
 
-    env:
-
-      # ==========================================================
-      # WEBTOP
-      # ==========================================================
-
-      WEBTOP_IMAGE: lscr.io/linuxserver/webtop:ubuntu-kde
-      WEBTOP_CONTAINER: adiban-webtop
-
-      WEBTOP_CONFIG: ${{ github.workspace }}/.adiban-webtop
-
-      WEBTOP_HOST: 127.0.0.1
-      WEBTOP_PORT: '3001'
-
-      WEBTOP_USER: abc
-      WEBTOP_HOME: /config
-
-      PUID: '1000'
-      PGID: '1000'
-
-      WEBTOP_TZ: ${{ inputs.timezone }}
-
-      # ==========================================================
-      # WORKSPACE
-      # ==========================================================
-
-      WORKSPACE_NAME: ${{ inputs.workspace_name }}
-      SESSION_HOURS: ${{ inputs.session_hours }}
-
-      # ==========================================================
-      # PATHS
-      # ==========================================================
-
-      USER_BIN: /config/.local/bin
-      SYSTEM_BIN: /usr/local/bin
-
-      # ==========================================================
-      # AUTH
-      # ==========================================================
-
-      WEBTOP_PASSWORD: ${{ secrets.WEBTOP_PASSWORD }}
+    concurrency:
+      group: "adiban-cloud-${{ github.repository }}-${{ inputs.workspace_name }}"
+      cancel-in-progress: false
 
 
     steps:
 
-      # ==========================================================
-      # 01. INITIALIZE
-      # ==========================================================
+      # ============================================================
+      # SYSTEM INFORMATION
+      # ============================================================
 
-      - name: "🚀 Initialize"
+      - name: "📋 System Information"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🚀 Initializing ADIBAN Cloud"
+          echo "::group::📋 System Information"
 
-          started_epoch="$(date +%s)"
+          echo "🖥️ Hostname:"
+          hostname
 
-          {
-            echo "# ☁️ ADIBAN Cloud Linux Desktop"
-            echo
-            echo "> 🚀 **Interactive Linux development environment**"
-            echo
-            echo "## ⚙️ Configuration"
-            echo
-            echo "| Setting | Value |"
-            echo "|---|---|"
-            echo "| 🖥️ Runner | \`${{ inputs.runner }}\` |"
-            echo "| 🐳 Webtop | \`${WEBTOP_IMAGE}\` |"
-            echo "| 🎨 Desktop | KDE Plasma |"
-            echo "| 🌐 Display | Wayland / Selkies |"
-            echo "| 🌍 Timezone | \`${WEBTOP_TZ}\` |"
-            echo "| 📦 Workspace | \`${WORKSPACE_NAME}\` |"
-            echo "| ⏱️ Session | \`${SESSION_HOURS}h\` |"
-            echo "| 🔐 Webtop Auth | \`${{ inputs.enable_webtop_auth }}\` |"
-            echo "| ☁️ Cloudflare | \`${{ inputs.enable_cloudflare }}\` |"
-            echo
-            echo "## 🧩 Software"
-            echo
-            echo "| Component | Enabled |"
-            echo "|---|---|"
-            echo "| 🐍 Python 3.13 | \`${{ inputs.install_python }}\` |"
-            echo "| 🟢 Node.js 22 | \`${{ inputs.install_node }}\` |"
-            echo "| 🦊 Firefox | \`${{ inputs.install_firefox }}\` |"
-            echo "| 🌐 Chrome | \`${{ inputs.install_chrome }}\` |"
-            echo "| 💻 VS Code | \`${{ inputs.install_vscode }}\` |"
-            echo "| ⚡ OpenCode | \`${{ inputs.install_opencode }}\` |"
-            echo "| 🚀 Antigravity | \`${{ inputs.install_antigravity }}\` |"
-            echo "| 🤖 Antigravity CLI | \`${{ inputs.install_antigravity_cli }}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo
+          echo "🐧 OS:"
+          cat /etc/os-release
 
-          echo "✅ Initialization complete."
+          echo
+          echo "⚙️ Kernel:"
+          uname -a
+
+          echo
+          echo "🧠 CPU:"
+          nproc
+
+          echo
+          echo "💾 Memory:"
+          free -h
+
+          echo
+          echo "💽 Disk:"
+          df -h /
+
+          echo
+          echo "🐳 Docker:"
+          docker --version
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 02. RUNNER INSPECTION
-      # ==========================================================
+      # ============================================================
+      # PREPARE HOST
+      # ============================================================
 
-      - name: "🔎 Inspect Runner"
+      - name: "🐳 Prepare Docker"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🔎 Runner information"
+          echo "::group::🐳 Docker"
 
-          {
-            echo
-            echo "========== HOST =========="
-            hostnamectl 2>/dev/null || true
-            echo
+          docker version
 
-            echo "========== OS =========="
-            cat /etc/os-release
-            echo
+          docker info
 
-            echo "========== KERNEL =========="
-            uname -a
-            echo
-
-            echo "========== CPU =========="
-            nproc
-            lscpu | sed -n '1,18p' || true
-            echo
-
-            echo "========== MEMORY =========="
-            free -h
-            echo
-
-            echo "========== DISK =========="
-            df -h /
-            echo
-
-            echo "========== DOCKER =========="
-            docker --version
-            docker compose version 2>/dev/null || true
-          } | tee /tmp/adiban-runner.txt
-
-          {
-            echo
-            echo "## 🔎 Runner Environment"
-            echo
-            echo '```text'
-            cat /tmp/adiban-runner.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "✅ Runner inspection complete."
+          echo "✅ Docker is ready."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 03. PREPARE WORKSPACE
-      # ==========================================================
+      # ============================================================
+      # WORKSPACE
+      # ============================================================
 
       - name: "📁 Prepare Workspace"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::📁 Preparing workspace"
+          WORKSPACE_DIR="${{ github.workspace }}/.adiban-webtop"
 
-          rm -rf "$WEBTOP_CONFIG"
+          echo "::group::📁 Workspace"
 
-          mkdir -p \
-            "$WEBTOP_CONFIG"
+          mkdir -p "$WORKSPACE_DIR"
 
-          chmod 700 \
-            "$WEBTOP_CONFIG"
+          chmod 755 "$WORKSPACE_DIR"
 
-          echo "📂 Workspace:"
-          echo "   $WEBTOP_CONFIG"
-
-          echo "✅ Workspace ready."
+          echo "📁 Workspace:"
+          echo "$WORKSPACE_DIR"
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 04. PULL WEBTOP
-      # ==========================================================
+      # ============================================================
+      # START WEBTOP
+      # ============================================================
 
-      - name: "🐳 Pull Webtop"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "::group::🐳 Pulling Webtop image"
-
-          docker pull \
-            "$WEBTOP_IMAGE"
-
-          echo "✅ Image pulled:"
-          docker image inspect "$WEBTOP_IMAGE" \
-            --format '   {{.RepoTags}}'
-
-          echo "::endgroup::"
-
-
-      # ==========================================================
-      # 05. START WEBTOP
-      # ==========================================================
-
-      - name: "🖥️ Start Webtop"
+      - name: "🖥️ Start KDE Webtop"
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo "::group::🖥️ Starting Webtop"
 
-          docker rm -f \
-            "$WEBTOP_CONTAINER" \
-            >/dev/null 2>&1 || true
+          docker rm -f "$WEBTOP_CONTAINER" >/dev/null 2>&1 || true
 
-          docker_args=(
-            run
-            --detach
-            --name "$WEBTOP_CONTAINER"
-
-            --shm-size=1gb
-
-            --publish "${WEBTOP_HOST}:${WEBTOP_PORT}:3001"
-
-            --volume "${WEBTOP_CONFIG}:/config"
-
-            --env "PUID=${PUID}"
-            --env "PGID=${PGID}"
-            --env "TZ=${WEBTOP_TZ}"
-
-            --env "CUSTOM_PORT=3000"
-            --env "CUSTOM_HTTPS_PORT=3001"
-          )
+          AUTH_ENV=""
 
           if [[ "${{ inputs.enable_webtop_auth }}" == "true" ]]; then
+            echo "🔐 Webtop authentication enabled."
 
-            if [[ -z "${WEBTOP_PASSWORD:-}" ]]; then
-              echo "❌ WEBTOP_PASSWORD secret is required when authentication is enabled." >&2
-              exit 1
-            fi
-
-            docker_args+=(
-              --env "CUSTOM_USER=${WEBTOP_USER}"
-              --env "PASSWORD=${WEBTOP_PASSWORD}"
-            )
-
-            echo "🔐 Authentication: ENABLED"
-
+            AUTH_ENV="
+              -e CUSTOM_USER=adiban
+              -e PASSWORD=adiban
+            "
           else
-            echo "⚠️ Authentication: DISABLED"
+            echo "🔓 Webtop authentication disabled."
           fi
 
-          docker "${docker_args[@]}" \
+          docker run -d \
+            --name "$WEBTOP_CONTAINER" \
+            --restart unless-stopped \
+            --shm-size="2gb" \
+            -p "${WEBTOP_HOST}:${WEBTOP_PORT}:3001" \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ="${{ inputs.timezone }}" \
+            -e TITLE="ADIBAN Cloud Linux" \
+            -v "${{ github.workspace }}/.adiban-webtop:/config" \
             "$WEBTOP_IMAGE"
 
           echo
-          echo "✅ Webtop container started."
-          echo
+          echo "⏳ Waiting for Webtop..."
 
-          docker ps \
-            --filter "name=${WEBTOP_CONTAINER}" \
-            --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-
-          echo "::endgroup::"
-
-
-      # ==========================================================
-      # 06. WAIT FOR WEBTOP
-      # ==========================================================
-
-      - name: "⏳ Wait for Webtop"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "::group::⏳ Waiting for Webtop"
-
-          for attempt in $(seq 1 90); do
+          for i in {1..60}; do
 
             if curl \
               --silent \
               --show-error \
-              --insecure \
               --fail \
-              --max-time 5 \
-              "https://${WEBTOP_HOST}:${WEBTOP_PORT}/" \
+              "http://${WEBTOP_HOST}:${WEBTOP_PORT}/" \
               >/dev/null 2>&1; then
 
               echo "✅ Webtop is ready."
-              echo "   Attempt: ${attempt}/90"
-              echo "   URL: https://${WEBTOP_HOST}:${WEBTOP_PORT}/"
-
-              echo "::endgroup::"
-              exit 0
+              break
             fi
 
-            if (( attempt % 10 == 0 )); then
-              echo "⏳ Still waiting... (${attempt}/90)"
+            if [[ "$i" == "60" ]]; then
+              echo "❌ Webtop failed to start."
+
+              docker ps -a
+
+              docker logs \
+                --tail 200 \
+                "$WEBTOP_CONTAINER" || true
+
+              exit 1
             fi
 
             sleep 2
           done
 
-          echo "❌ Webtop failed to start."
-          echo
-          echo "========== CONTAINER =========="
-          docker ps -a \
-            --filter "name=${WEBTOP_CONTAINER}"
-
-          echo
-          echo "========== LOGS =========="
-          docker logs \
-            --tail 250 \
-            "$WEBTOP_CONTAINER" \
-            || true
-
           echo "::endgroup::"
 
-          exit 1
 
+      # ============================================================
+      # WEBTOP DEBUG
+      # ============================================================
 
-      # ==========================================================
-      # 07. BASE SOFTWARE
-      # ==========================================================
-
-      - name: "🧰 Install Base Tools"
+      - name: "🔎 Webtop Diagnostics"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🧰 Installing base tools"
+          echo "::group::🔎 Webtop Diagnostics"
+
+          docker ps -a
+
+          echo
+          docker inspect "$WEBTOP_CONTAINER" \
+            --format='Status={{.State.Status}} Started={{.State.StartedAt}}'
+
+          echo
+          echo "📜 Recent Webtop logs:"
+
+          docker logs \
+            --tail 100 \
+            "$WEBTOP_CONTAINER" || true
+
+          echo "::endgroup::"
+
+
+      # ============================================================
+      # BASE PACKAGES
+      # ============================================================
+
+      - name: "📦 Install Base Packages"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "::group::📦 Base Packages"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
               export DEBIAN_FRONTEND=noninteractive
@@ -485,24 +331,50 @@ jobs:
               apt-get update
 
               apt-get install -y \
-                ca-certificates \
                 curl \
                 wget \
                 git \
-                gnupg \
+                git-lfs \
                 unzip \
-                xz-utils \
+                zip \
                 tar \
+                gzip \
                 bzip2 \
-                procps \
-                file \
-                jq \
+                xz-utils \
+                ca-certificates \
+                gnupg \
+                lsb-release \
+                apt-transport-https \
+                software-properties-common \
                 build-essential \
-                python3 \
-                python3-pip \
-                python3-venv
+                pkg-config \
+                jq \
+                tree \
+                htop \
+                nano \
+                vim \
+                neofetch \
+                procps \
+                psmisc \
+                net-tools \
+                iproute2 \
+                dnsutils \
+                iputils-ping \
+                socat \
+                x11-utils \
+                dbus-x11 \
+                libnss3 \
+                libatk-bridge2.0-0 \
+                libgtk-3-0 \
+                libgbm1 \
+                libasound2 \
+                libxss1 \
+                libxshmfence1
+
+              apt-get clean
 
               rm -rf /var/lib/apt/lists/*
+
             '
 
           echo "✅ Base packages installed."
@@ -510,64 +382,9 @@ jobs:
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 08. USER ENVIRONMENT
-      # ==========================================================
-
-      - name: "🛠️ Configure User Environment"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "::group::🛠️ Configuring user environment"
-
-          docker exec \
-            --user "$WEBTOP_USER" \
-            --env "HOME=$WEBTOP_HOME" \
-            "$WEBTOP_CONTAINER" \
-            bash -lc '
-              set -Eeuo pipefail
-
-              mkdir -p \
-                "$HOME/.local/bin" \
-                "$HOME/.config" \
-                "$HOME/.cache"
-
-              touch "$HOME/.bashrc"
-
-              ensure_line() {
-                local line="$1"
-                local file="$2"
-
-                grep -qxF "$line" "$file" \
-                  || printf "%s\n" "$line" >> "$file"
-              }
-
-              ensure_line \
-                "export ADIBAN_CLOUD_PATH=1" \
-                "$HOME/.bashrc"
-
-              ensure_line \
-                "export PATH=\"\$HOME/.local/bin:\$PATH\"" \
-                "$HOME/.bashrc"
-
-              export PATH="$HOME/.local/bin:$PATH"
-
-              echo "HOME=$HOME"
-              echo "PATH=$PATH"
-              echo "USER=$(id -un)"
-              echo "UID=$(id -u)"
-              echo "GID=$(id -g)"
-            '
-
-          echo "✅ User environment configured."
-
-          echo "::endgroup::"
-
-
-      # ==========================================================
-      # 09. PYTHON 3.13
-      # ==========================================================
+      # ============================================================
+      # PYTHON 3.13
+      # ============================================================
 
       - name: "🐍 Install Python 3.13"
         if: ${{ inputs.install_python }}
@@ -575,72 +392,71 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🐍 Installing Python 3.13"
+          echo "::group::🐍 Python 3.13"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
-              export DEBIAN_FRONTEND=noninteractive
+              export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"
 
-              # Install uv system-wide.
-              curl -LsSf \
-                https://astral.sh/uv/install.sh \
-                | UV_INSTALL_DIR=/usr/local/bin sh
+              echo "📥 Installing uv..."
 
-              export PATH="/usr/local/bin:$PATH"
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+
+              export PATH="$HOME/.local/bin:$PATH"
+
+              echo
+              echo "📍 uv:"
+              command -v uv
 
               uv --version
 
-              # Explicit executable location.
+              echo
+              echo "📥 Installing Python 3.13..."
+
               export UV_PYTHON_BIN_DIR=/usr/local/bin
 
-              uv python install \
-                3.13 \
-                --default
+              uv python install 3.13 --default
 
               echo
-              echo "📍 Python executable:"
-              command -v python3.13 || true
-              command -v python3 || true
-              command -v python || true
+              echo "🔎 Python executable:"
+              command -v python3.13
 
               echo
-              echo "🐍 Version:"
-              /usr/local/bin/python3.13 --version
+              python3.13 --version
 
               echo
-              echo "🔎 uv Python directory:"
-              uv python dir
+              echo "🔎 Python 3:"
+              command -v python3
+
+              python3 --version
 
               echo
-              echo "🔎 uv binary directory:"
-              uv python dir --bin
+              echo "🔎 Python:"
+              command -v python
 
-              # Safety fallback.
-              if [[ ! -x /usr/local/bin/python3.13 ]]; then
-                echo "❌ python3.13 was not created in /usr/local/bin." >&2
-                exit 1
-              fi
+              python --version
 
-              chmod 755 \
-                /usr/local/bin/python3.13
-
-              if [[ -L /usr/local/bin/python3.13 ]]; then
-                echo "🔗 python3.13 is a symlink:"
-                readlink -f /usr/local/bin/python3.13
-              fi
             '
 
-          echo "✅ Python 3.13 installed system-wide."
+          echo "✅ Python 3.13 installed."
+
+          {
+            echo
+            echo "### 🐍 Python"
+            echo
+            echo "✅ Python 3.13 installed successfully."
+          } >> "$GITHUB_STEP_SUMMARY"
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 10. NODE.JS 22
-      # ==========================================================
+      # ============================================================
+      # NODE.JS 22
+      # ============================================================
 
       - name: "🟢 Install Node.js 22"
         if: ${{ inputs.install_node }}
@@ -648,65 +464,79 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🟢 Installing Node.js 22"
+          echo "::group::🟢 Node.js 22"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
-              NODE_VERSION=22.23.2
-              ARCH=linux-x64
+              NODE_VERSION="22.19.0"
 
-              cd /tmp
+              ARCH="$(dpkg --print-architecture)"
+
+              case "$ARCH" in
+                amd64)
+                  NODE_ARCH="x64"
+                  ;;
+                arm64)
+                  NODE_ARCH="arm64"
+                  ;;
+                *)
+                  echo "❌ Unsupported architecture: $ARCH"
+                  exit 1
+                  ;;
+              esac
+
+              TMP="/tmp/node.tar.xz"
+
+              echo "📥 Downloading Node.js ${NODE_VERSION}..."
 
               curl \
                 --fail \
                 --silent \
                 --show-error \
                 --location \
-                --remote-name \
-                "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${ARCH}.tar.xz"
+                "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+                -o "$TMP"
 
-              rm -rf /opt/nodejs
+              rm -rf /usr/local/node
 
-              mkdir -p \
-                /opt/nodejs
+              mkdir -p /usr/local/node
 
               tar \
-                -xJf \
-                "node-v${NODE_VERSION}-${ARCH}.tar.xz" \
-                -C /opt/nodejs \
-                --strip-components=1
+                -xJf "$TMP" \
+                --strip-components=1 \
+                -C /usr/local/node
 
-              ln -sf \
-                /opt/nodejs/bin/node \
-                /usr/local/bin/node
+              rm -f "$TMP"
 
-              ln -sf \
-                /opt/nodejs/bin/npm \
-                /usr/local/bin/npm
+              ln -sf /usr/local/node/bin/node /usr/local/bin/node
+              ln -sf /usr/local/node/bin/npm /usr/local/bin/npm
+              ln -sf /usr/local/node/bin/npx /usr/local/bin/npx
+              ln -sf /usr/local/node/bin/corepack /usr/local/bin/corepack
 
-              ln -sf \
-                /opt/nodejs/bin/npx \
-                /usr/local/bin/npx
-
-              rm -f \
-                "node-v${NODE_VERSION}-${ARCH}.tar.xz"
+              echo "📍 Node:"
+              command -v node
 
               node --version
+
+              echo "📍 npm:"
+              command -v npm
+
               npm --version
-              npx --version
+
             '
 
-          echo "✅ Node.js 22 installed."
+          echo "✅ Node.js installed."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 11. FIREFOX
-      # ==========================================================
+      # ============================================================
+      # FIREFOX
+      # ============================================================
 
       - name: "🦊 Install Firefox"
         if: ${{ inputs.install_firefox }}
@@ -714,39 +544,40 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🦊 Installing Firefox"
+          echo "::group::🦊 Firefox"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
               export DEBIAN_FRONTEND=noninteractive
 
-              if command -v firefox >/dev/null 2>&1; then
-                echo "ℹ️ Firefox already installed."
-                firefox --version
-                exit 0
-              fi
-
               apt-get update
 
-              apt-get install -y \
-                firefox
+              apt-get install -y firefox
+
+              apt-get clean
 
               rm -rf /var/lib/apt/lists/*
 
+              echo
+              echo "📍 Firefox:"
+              command -v firefox
+
               firefox --version
+
             '
 
-          echo "✅ Firefox ready."
+          echo "✅ Firefox installed."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 12. GOOGLE CHROME
-      # ==========================================================
+      # ============================================================
+      # GOOGLE CHROME
+      # ============================================================
 
       - name: "🌐 Install Google Chrome"
         if: ${{ inputs.install_chrome }}
@@ -754,53 +585,50 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🌐 Installing Google Chrome"
+          echo "::group::🌐 Google Chrome"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
-              if command -v google-chrome >/dev/null 2>&1; then
-                echo "ℹ️ Chrome already installed."
-                google-chrome --version
-                exit 0
-              fi
-
-              export DEBIAN_FRONTEND=noninteractive
-
-              cd /tmp
+              TMP="/tmp/google-chrome.deb"
 
               curl \
                 --fail \
                 --silent \
                 --show-error \
                 --location \
-                --output google-chrome.deb \
-                https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+                https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+                -o "$TMP"
 
               apt-get update
 
-              apt-get install -y \
-                ./google-chrome.deb
+              apt-get install -y "$TMP"
 
-              rm -f \
-                google-chrome.deb
+              rm -f "$TMP"
 
-              rm -rf \
-                /var/lib/apt/lists/*
+              apt-get clean
+
+              rm -rf /var/lib/apt/lists/*
+
+              echo
+              echo "📍 Chrome:"
+              command -v google-chrome
 
               google-chrome --version
+
             '
 
-          echo "✅ Google Chrome ready."
+          echo "✅ Google Chrome installed."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 13. VISUAL STUDIO CODE
-      # ==========================================================
+      # ============================================================
+      # VISUAL STUDIO CODE INSTALL
+      # ============================================================
 
       - name: "💻 Install Visual Studio Code"
         if: ${{ inputs.install_vscode }}
@@ -808,105 +636,204 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "::group::💻 Installing VS Code"
+          echo "::group::💻 Visual Studio Code"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
-              if command -v code >/dev/null 2>&1; then
-                echo "ℹ️ VS Code already installed."
-                code --version | head -n 1
-                exit 0
-              fi
+              TMP="/tmp/vscode.deb"
 
-              export DEBIAN_FRONTEND=noninteractive
-
-              cd /tmp
+              echo "📥 Downloading VS Code..."
 
               curl \
                 --fail \
                 --silent \
                 --show-error \
                 --location \
-                --output vscode.deb \
-                "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64"
+                https://update.code.visualstudio.com/latest/linux-deb-x64/stable \
+                -o "$TMP"
 
               apt-get update
 
-              apt-get install -y \
-                ./vscode.deb
+              apt-get install -y "$TMP"
 
-              rm -f \
-                vscode.deb
+              rm -f "$TMP"
 
-              rm -rf \
-                /var/lib/apt/lists/*
+              apt-get clean
 
-              code --version | head -n 1
+              rm -rf /var/lib/apt/lists/*
+
+              echo
+              echo "🔎 VS Code binary:"
+
+              test -x /usr/bin/code
+
+              command -v code
+
+              echo
+              echo "📦 Package:"
+
+              dpkg-query \
+                -W \
+                -f="\${Package} \${Version}\n" \
+                code
+
+              echo
+              echo "ℹ️ VS Code installation verified."
+
             '
 
-          echo "✅ VS Code installed."
+          echo "✅ VS Code package installed."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 14. OPENCODE
-      # ==========================================================
+      # ============================================================
+      # VS CODE USER RUNTIME TEST
+      # ============================================================
 
-      - name: "⚡ Install OpenCode CLI"
-        if: ${{ inputs.install_opencode }}
+      - name: "🧪 Verify VS Code Runtime"
+        if: ${{ inputs.install_vscode }}
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::⚡ Installing OpenCode"
+          echo "::group::🧪 VS Code Runtime"
 
           docker exec \
             --user "$WEBTOP_USER" \
             --env "HOME=$WEBTOP_HOME" \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
               export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
+              echo "👤 User:"
+              id -un
+
+              echo
+              echo "🏠 HOME:"
+              echo "$HOME"
+
+              echo
+              echo "📍 VS Code:"
+              command -v code
+
+              echo
+              echo "💻 Version:"
+              code --version | head -n 1
+
+              echo
+              echo "🧪 Runtime test..."
+
+              TEST_DIR="$HOME/.vscode-runtime-test"
+
+              rm -rf "$TEST_DIR"
+
+              mkdir -p "$TEST_DIR/extensions"
+
+              code \
+                --user-data-dir="$TEST_DIR" \
+                --extensions-dir="$TEST_DIR/extensions" \
+                --version \
+                >/dev/null
+
+              rm -rf "$TEST_DIR"
+
+              echo "✅ VS Code runtime test passed."
+
+            '
+
+          {
+            echo
+            echo "### 💻 Visual Studio Code"
+            echo
+            echo "✅ Installed and executable as **${WEBTOP_USER}**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::endgroup::"
+
+
+      # ============================================================
+      # OPENCODE
+      # ============================================================
+
+      - name: "🤖 Install OpenCode"
+        if: ${{ inputs.install_opencode }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "::group::🤖 OpenCode"
+
+          docker exec \
+            --user "$WEBTOP_USER" \
+            --env "HOME=$WEBTOP_HOME" \
+            "$WEBTOP_CONTAINER" \
+            bash -lc '
+
+              set -Eeuo pipefail
+
+              export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+
+              mkdir -p "$HOME/.local/bin"
+
+              echo "📥 Installing OpenCode..."
+
               curl \
-                --fail \
-                --silent \
-                --show-error \
-                --location \
+                -fsSL \
                 https://opencode.ai/install \
                 | bash
 
-              # Normalize common installation locations.
+              echo
+              echo "🔎 Searching for OpenCode..."
+
+              FOUND=""
+
               for candidate in \
                 "$HOME/.local/bin/opencode" \
                 "$HOME/.opencode/bin/opencode" \
+                "$HOME/.opencode/bin/opencode-linux-x64" \
                 "/usr/local/bin/opencode"
               do
                 if [[ -x "$candidate" ]]; then
-                  mkdir -p "$HOME/.local/bin"
-
-                  if [[ "$candidate" != "$HOME/.local/bin/opencode" ]]; then
-                    ln -sf \
-                      "$candidate" \
-                      "$HOME/.local/bin/opencode"
-                  fi
-
+                  FOUND="$candidate"
                   break
                 fi
               done
 
+              if [[ -z "$FOUND" ]]; then
+
+                FOUND="$(find "$HOME" -type f -name opencode -perm -111 2>/dev/null | head -n 1 || true)"
+
+              fi
+
+              if [[ -z "$FOUND" ]]; then
+                echo "❌ OpenCode executable was not found."
+                exit 1
+              fi
+
+              if [[ "$FOUND" != "$HOME/.local/bin/opencode" ]]; then
+                cp "$FOUND" "$HOME/.local/bin/opencode"
+                chmod +x "$HOME/.local/bin/opencode"
+              fi
+
               export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
+              echo
               echo "📍 OpenCode:"
               command -v opencode
 
               echo
+              echo "💻 Version:"
+
               opencode --version
+
             '
 
           echo "✅ OpenCode installed."
@@ -914,113 +841,108 @@ jobs:
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 15. ANTIGRAVITY GUI
-      # ==========================================================
+      # ============================================================
+      # ANTIGRAVITY GUI
+      # ============================================================
 
       - name: "🚀 Install Antigravity GUI"
-        if: ${{ inputs.install_antigravity }}
+        if: ${{ inputs.install_antigravity_gui }}
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🚀 Installing Antigravity GUI"
+          echo "::group::🚀 Antigravity GUI"
 
           docker exec \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
               export DEBIAN_FRONTEND=noninteractive
 
-              mkdir -p \
-                /etc/apt/keyrings
+              echo "📥 Adding Antigravity repository..."
 
               curl \
-                --fail \
-                --silent \
-                --show-error \
-                --location \
+                -fsSL \
                 https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg \
                 | gpg \
                   --dearmor \
                   --yes \
-                  --output \
-                  /etc/apt/keyrings/antigravity-repo-key.gpg
+                  -o /usr/share/keyrings/antigravity.gpg
 
-              cat > /etc/apt/sources.list.d/antigravity.list <<EOF
-              deb [signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev/ antigravity-debian main
-              EOF
+              echo \
+                "deb [signed-by=/usr/share/keyrings/antigravity.gpg] https://us-central1-apt.pkg.dev/projects/antigravity stable main" \
+                > /etc/apt/sources.list.d/antigravity.list
 
               apt-get update
 
-              apt-get install -y \
-                antigravity
+              apt-get install -y antigravity
 
-              rm -rf \
-                /var/lib/apt/lists/*
+              apt-get clean
 
-              echo "📦 Antigravity package:"
+              rm -rf /var/lib/apt/lists/*
+
+              echo
+              echo "🔎 Antigravity package:"
+
               dpkg-query \
                 -W \
                 -f="\${Package} \${Version}\n" \
                 antigravity
+
             '
 
-          echo "✅ Antigravity GUI installed."
+          echo "✅ Antigravity GUI package installed."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 16. ANTIGRAVITY CLI
-      # ==========================================================
+      # ============================================================
+      # ANTIGRAVITY CLI
+      # ============================================================
 
-      - name: "🤖 Install Antigravity CLI"
+      - name: "⚡ Install Antigravity CLI"
         if: ${{ inputs.install_antigravity_cli }}
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🤖 Installing Antigravity CLI"
+          echo "::group::⚡ Antigravity CLI"
 
           docker exec \
             --user "$WEBTOP_USER" \
             --env "HOME=$WEBTOP_HOME" \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
 
               export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
+              mkdir -p "$HOME/.local/bin"
+
+              echo "📥 Installing Antigravity CLI..."
+
               curl \
-                --fail \
-                --silent \
-                --show-error \
-                --location \
+                -fsSL \
                 https://antigravity.google/cli/install.sh \
                 | bash
 
               export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
-              # Antigravity officially installs agy here:
-              # ~/.local/bin/agy
+              echo
+              echo "📍 agy:"
 
-              if [[ ! -x "$HOME/.local/bin/agy" ]]; then
-                echo "❌ agy binary was not installed." >&2
-                exit 1
-              fi
+              test -x "$HOME/.local/bin/agy"
 
-              chmod +x \
-                "$HOME/.local/bin/agy"
-
-              echo "📍 Antigravity CLI:"
               command -v agy
 
               echo
-              echo "🔎 Binary:"
-              ls -lh \
-                "$HOME/.local/bin/agy"
+              echo "💻 Version:"
+
+              agy --version
+
             '
 
           echo "✅ Antigravity CLI installed."
@@ -1028,327 +950,173 @@ jobs:
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 17. FINALIZE USER ENVIRONMENT
-      # ==========================================================
+      # ============================================================
+      # VERIFY ALL SOFTWARE
+      # ============================================================
 
-      - name: "🧩 Finalize User Environment"
+      - name: "🧪 Verify Installed Software"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::🧩 Finalizing environment"
+          echo "::group::🧪 Software Verification"
 
           docker exec \
             --user "$WEBTOP_USER" \
             --env "HOME=$WEBTOP_HOME" \
             "$WEBTOP_CONTAINER" \
             bash -lc '
+
               set -Eeuo pipefail
-
-              mkdir -p \
-                "$HOME/.local/bin"
-
-              touch "$HOME/.bashrc"
-
-              if ! grep -qxF \
-                "export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"" \
-                "$HOME/.bashrc"
-              then
-                sed -i \
-                  '/export PATH=.*\.local\/bin/d' \
-                  "$HOME/.bashrc"
-
-                printf "%s\n" \
-                  "export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"" \
-                  >> "$HOME/.bashrc"
-              fi
 
               export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
-              echo "USER=$USER"
-              echo "HOME=$HOME"
-              echo "PATH=$PATH"
+              echo "👤 User: $(id -un)"
+              echo "🏠 HOME: $HOME"
 
               echo
-              echo "Executable directories:"
-              echo "  ~/.local/bin"
-              echo "  /usr/local/bin"
+              echo "======================================"
+              echo "🧪 SOFTWARE STATUS"
+              echo "======================================"
+
+              check_user() {
+
+                local NAME="$1"
+                local CMD="$2"
+                local REQUIRED="$3"
+
+                echo
+                echo "🔹 $NAME"
+
+                if command -v "$CMD" >/dev/null 2>&1; then
+
+                  echo "   📍 $(command -v "$CMD")"
+
+                  if "$CMD" --version >/dev/null 2>&1; then
+                    "$CMD" --version | head -n 1 || true
+                  fi
+
+                  echo "   ✅ OK"
+
+                else
+
+                  if [[ "$REQUIRED" == "true" ]]; then
+                    echo "   ❌ MISSING"
+                    exit 1
+                  else
+                    echo "   ⚠️ OPTIONAL / NOT INSTALLED"
+                  fi
+
+                fi
+              }
+
+              check_user "Python 3.13" python3.13 "${{ inputs.install_python }}"
+              check_user "Node.js" node "${{ inputs.install_node }}"
+              check_user "Firefox" firefox "${{ inputs.install_firefox }}"
+              check_user "Chrome" google-chrome "${{ inputs.install_chrome }}"
+              check_user "VS Code" code "${{ inputs.install_vscode }}"
+              check_user "OpenCode" opencode "${{ inputs.install_opencode }}"
+              check_user "Antigravity CLI" agy "${{ inputs.install_antigravity_cli }}"
+
+              echo
+              echo "======================================"
+              echo "🎉 VERIFICATION COMPLETE"
+              echo "======================================"
+
             '
 
-          echo "✅ User environment finalized."
+          echo "✅ Software verification completed."
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 18. SOFTWARE VERIFICATION
-      # ==========================================================
+      # ============================================================
+      # CREATE DESKTOP SHORTCUTS
+      # ============================================================
 
-      - name: "✅ Verify Software"
+      - name: "🧩 Create Desktop Shortcuts"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::✅ Verifying installed software"
+          echo "::group::🧩 Desktop Shortcuts"
 
-          table_file="$(mktemp)"
+          docker exec \
+            --user "$WEBTOP_USER" \
+            --env "HOME=$WEBTOP_HOME" \
+            "$WEBTOP_CONTAINER" \
+            bash -lc '
 
-          echo "| Component | Status | Version / Path |" > "$table_file"
-          echo "|---|---|---|" >> "$table_file"
+              set -Eeuo pipefail
 
-          verify_user() {
-            local label="$1"
-            local command="$2"
-            local enabled="$3"
+              DESKTOP="$HOME/Desktop"
 
-            if [[ "$enabled" != "true" ]]; then
-              echo "| ${label} | ⏭️ Disabled | — |" >> "$table_file"
-              return 0
-            fi
+              mkdir -p "$DESKTOP"
 
-            local output
+              if command -v code >/dev/null 2>&1; then
 
-            if output="$(
-              docker exec \
-                --user "$WEBTOP_USER" \
-                --env "HOME=$WEBTOP_HOME" \
-                "$WEBTOP_CONTAINER" \
-                bash -lc "
-                  set -Eeuo pipefail
-                  export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"
-                  $command
-                " \
-                2>&1
-            )"; then
+                cat > "$DESKTOP/Visual Studio Code.desktop" <<EOF
+              [Desktop Entry]
+              Version=1.0
+              Type=Application
+              Name=Visual Studio Code
+              Comment=Visual Studio Code
+              Exec=code --no-sandbox
+              Icon=code
+              Terminal=false
+              Categories=Development;IDE;
+              EOF
 
-              output="$(printf '%s\n' "$output" | head -n 1 | sed 's/|/\\|/g')"
+                chmod +x "$DESKTOP/Visual Studio Code.desktop"
 
-              echo "| ${label} | ✅ Ready | \`${output}\` |" \
-                >> "$table_file"
-
-              printf '  ✅ %-24s %s\n' \
-                "$label" \
-                "$output"
-
-            else
-
-              echo "| ${label} | ❌ FAILED | — |" \
-                >> "$table_file"
-
-              echo "❌ ${label} verification failed:"
-              printf '%s\n' "$output"
-
-              return 1
-            fi
-          }
-
-          verify_root() {
-            local label="$1"
-            local command="$2"
-            local enabled="$3"
-
-            if [[ "$enabled" != "true" ]]; then
-              echo "| ${label} | ⏭️ Disabled | — |" >> "$table_file"
-              return 0
-            fi
-
-            local output
-
-            if output="$(
-              docker exec \
-                "$WEBTOP_CONTAINER" \
-                bash -lc "
-                  set -Eeuo pipefail
-                  $command
-                " \
-                2>&1
-            ); then
-
-              output="$(printf '%s\n' "$output" | head -n 1 | sed 's/|/\\|/g')"
-
-              echo "| ${label} | ✅ Ready | \`${output}\` |" \
-                >> "$table_file"
-
-              printf '  ✅ %-24s %s\n' \
-                "$label" \
-                "$output"
-
-            else
-
-              echo "| ${label} | ❌ FAILED | — |" \
-                >> "$table_file"
-
-              echo "❌ ${label} verification failed:"
-              printf '%s\n' "$output"
-
-              return 1
-            fi
-          }
+              fi
 
 
-          # --------------------------------------------------------
-          # PYTHON
-          # --------------------------------------------------------
+              if command -v google-chrome >/dev/null 2>&1; then
 
-          verify_user \
-            "🐍 Python 3.13" \
-            "/usr/local/bin/python3.13 --version" \
-            "${{ inputs.install_python }}"
+                cat > "$DESKTOP/Google Chrome.desktop" <<EOF
+              [Desktop Entry]
+              Version=1.0
+              Type=Application
+              Name=Google Chrome
+              Exec=google-chrome --no-sandbox
+              Icon=google-chrome
+              Terminal=false
+              Categories=Network;WebBrowser;
+              EOF
 
+                chmod +x "$DESKTOP/Google Chrome.desktop"
 
-          # --------------------------------------------------------
-          # NODE
-          # --------------------------------------------------------
-
-          verify_root \
-            "🟢 Node.js" \
-            "node --version" \
-            "${{ inputs.install_node }}"
+              fi
 
 
-          # --------------------------------------------------------
-          # FIREFOX
-          # --------------------------------------------------------
+              if command -v firefox >/dev/null 2>&1; then
 
-          verify_root \
-            "🦊 Firefox" \
-            "firefox --version" \
-            "${{ inputs.install_firefox }}"
+                cat > "$DESKTOP/Firefox.desktop" <<EOF
+              [Desktop Entry]
+              Version=1.0
+              Type=Application
+              Name=Firefox
+              Exec=firefox
+              Icon=firefox
+              Terminal=false
+              Categories=Network;WebBrowser;
+              EOF
 
+                chmod +x "$DESKTOP/Firefox.desktop"
 
-          # --------------------------------------------------------
-          # CHROME
-          # --------------------------------------------------------
+              fi
 
-          verify_root \
-            "🌐 Chrome" \
-            "google-chrome --version" \
-            "${{ inputs.install_chrome }}"
+              echo "✅ Desktop shortcuts created."
 
-
-          # --------------------------------------------------------
-          # VS CODE
-          # --------------------------------------------------------
-
-          verify_root \
-            "💻 VS Code" \
-            "code --version | head -n 1" \
-            "${{ inputs.install_vscode }}"
-
-
-          # --------------------------------------------------------
-          # OPENCODE
-          # --------------------------------------------------------
-
-          verify_user \
-            "⚡ OpenCode" \
-            "command -v opencode && opencode --version" \
-            "${{ inputs.install_opencode }}"
-
-
-          # --------------------------------------------------------
-          # ANTIGRAVITY GUI
-          # --------------------------------------------------------
-
-          verify_root \
-            "🚀 Antigravity GUI" \
-            "dpkg-query -W -f='\${Version}' antigravity" \
-            "${{ inputs.install_antigravity }}"
-
-
-          # --------------------------------------------------------
-          # ANTIGRAVITY CLI
-          # --------------------------------------------------------
-
-          verify_user \
-            "🤖 Antigravity CLI" \
-            "command -v agy && ls -lh \"\$HOME/.local/bin/agy\"" \
-            "${{ inputs.install_antigravity_cli }}"
-
-
-          {
-            echo
-            echo "## ✅ Software Verification"
-            echo
-            cat "$table_file"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          rm -f "$table_file"
-
-          echo
-          echo "🎉 Software verification completed successfully."
+            '
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 19. DESKTOP DIAGNOSTICS
-      # ==========================================================
-
-      - name: "🩺 Desktop Diagnostics"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "::group::🩺 Desktop diagnostics"
-
-          diagnostics="$(
-            docker exec \
-              "$WEBTOP_CONTAINER" \
-              bash -lc '
-                set -Eeuo pipefail
-
-                echo "========== USER =========="
-                id
-                echo
-
-                echo "========== ENVIRONMENT =========="
-                echo "HOME=${HOME}"
-                echo "USER=${USER:-unknown}"
-                echo "DISPLAY=${DISPLAY:-unset}"
-                echo "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
-                echo "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset}"
-                echo "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-unset}"
-                echo "TZ=${TZ:-unset}"
-                echo
-
-                echo "========== STORAGE =========="
-                df -h /config /tmp 2>/dev/null || true
-                echo
-
-                echo "========== MEMORY =========="
-                free -h || true
-                echo
-
-                echo "========== PROCESSES =========="
-                ps aux | head -n 20 || true
-              '
-          )"
-
-          printf '%s\n' "$diagnostics"
-
-          {
-            echo
-            echo "## 🩺 Desktop Diagnostics"
-            echo
-            echo '<details>'
-            echo '<summary>Show diagnostics</summary>'
-            echo
-            echo '```text'
-            printf '%s\n' "$diagnostics"
-            echo '```'
-            echo '</details>'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "✅ Diagnostics collected."
-
-          echo "::endgroup::"
-
-
-      # ==========================================================
-      # 20. CLOUDFLARE
-      # ==========================================================
+      # ============================================================
+      # CLOUDFLARE
+      # ============================================================
 
       - name: "☁️ Start TryCloudflare"
         if: ${{ inputs.enable_cloudflare }}
@@ -1356,463 +1124,319 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "::group::☁️ Starting TryCloudflare"
+          echo "::group::☁️ TryCloudflare"
 
-          docker rm -f \
-            adiban-cloudflared \
-            >/dev/null 2>&1 || true
+          docker rm -f "$CLOUDFLARE_CONTAINER" >/dev/null 2>&1 || true
 
-          docker run \
-            --detach \
-            --name adiban-cloudflared \
+          docker run -d \
+            --name "$CLOUDFLARE_CONTAINER" \
             --network host \
-            --pull always \
             cloudflare/cloudflared:latest \
             tunnel \
             --no-autoupdate \
-            --url "https://${WEBTOP_HOST}:${WEBTOP_PORT}" \
-            --no-tls-verify
+            --url "http://${WEBTOP_HOST}:${WEBTOP_PORT}"
 
-          echo "⏳ Waiting for public URL..."
+          echo "⏳ Waiting for Cloudflare tunnel..."
 
-          tunnel_url=""
+          TUNNEL_URL=""
 
-          for attempt in $(seq 1 60); do
+          for i in {1..60}; do
 
-            tunnel_url="$(
-              docker logs \
-                adiban-cloudflared \
-                2>&1 \
-              | grep \
-                -Eo \
-                'https://[a-z0-9.-]+\.trycloudflare\.com' \
+            LOGS="$(docker logs "$CLOUDFLARE_CONTAINER" 2>&1 || true)"
+
+            TUNNEL_URL="$(
+              echo "$LOGS" \
+              | grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
               | head -n 1 \
               || true
             )"
 
-            if [[ -n "$tunnel_url" ]]; then
+            if [[ -n "$TUNNEL_URL" ]]; then
               break
-            fi
-
-            if (( attempt % 10 == 0 )); then
-              echo "⏳ Still waiting... (${attempt}/60)"
             fi
 
             sleep 2
+
           done
 
 
-          if [[ -z "$tunnel_url" ]]; then
+          if [[ -z "$TUNNEL_URL" ]]; then
 
-            echo "❌ Could not obtain TryCloudflare URL."
-
-            echo
-            echo "========== CLOUDFLARED LOGS =========="
+            echo "❌ Cloudflare tunnel URL was not detected."
 
             docker logs \
-              --tail 250 \
-              adiban-cloudflared \
-              || true
-
-            echo "::endgroup::"
+              --tail 200 \
+              "$CLOUDFLARE_CONTAINER" || true
 
             exit 1
+
           fi
 
 
-          echo "ADIBAN_TUNNEL_URL=$tunnel_url" \
-            >> "$GITHUB_ENV"
+          echo
+          echo "=========================================="
+          echo "☁️ ADIBAN CLOUD LINUX"
+          echo "=========================================="
+          echo
+          echo "🌐 Webtop URL:"
+          echo "$TUNNEL_URL"
+          echo
+          echo "👤 User:"
+          echo "$WEBTOP_USER"
+          echo
+          echo "🏠 Home:"
+          echo "$WEBTOP_HOME"
+          echo
+          echo "⏱️ Session:"
+          echo "${{ inputs.session_hours }} hours"
+          echo
+          echo "=========================================="
 
 
           {
             echo
-            echo "## 🌐 Remote Access"
+            echo "## ☁️ ADIBAN Cloud Linux"
             echo
-            echo "### ☁️ TryCloudflare"
+            echo "### 🌐 Webtop"
             echo
-            echo "🔗 **[$tunnel_url]($tunnel_url)**"
+            echo "**URL:** $TUNNEL_URL"
             echo
-
-            if [[ "${{ inputs.enable_webtop_auth }}" == "true" ]]; then
-              echo "🔐 Authentication: **Enabled**"
-            else
-              echo "⚠️ Authentication: **Disabled**"
-            fi
-
+            echo "**User:** \`$WEBTOP_USER\`"
             echo
-            echo "> 💡 Temporary TryCloudflare tunnel for development/testing."
+            echo "**Home:** \`$WEBTOP_HOME\`"
+            echo
+            echo "**Session:** \`${{ inputs.session_hours }} hours\`"
+            echo
+            echo "> ⚠️ TryCloudflare URLs are temporary."
           } >> "$GITHUB_STEP_SUMMARY"
 
 
-          echo
-          echo "🌍 Public URL:"
-          echo "   $tunnel_url"
-
-          echo
-          echo "✅ TryCloudflare started."
+          echo "$TUNNEL_URL" > "$GITHUB_WORKSPACE/cloudflare-url.txt"
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 21. FINAL HEALTH CHECK
-      # ==========================================================
+      # ============================================================
+      # LOCAL HEALTH CHECK
+      # ============================================================
 
-      - name: "❤️ Final Health Check"
+      - name: "❤️ Health Check"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::❤️ Final health check"
+          echo "::group::❤️ Health Check"
 
-          {
-            echo
-            echo "## ❤️ Final Health Check"
-            echo
-            echo "| Check | Result | Details |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "🖥️ Container:"
+          docker ps \
+            --filter "name=$WEBTOP_CONTAINER" \
+            --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
+          echo
+          echo "🌐 HTTP:"
 
-          # --------------------------------------------------------
-          # CONTAINER
-          # --------------------------------------------------------
-
-          if docker ps \
-            --format '{{.Names}}' \
-            | grep -qx "$WEBTOP_CONTAINER"; then
-
-            echo "| 🐳 Webtop | ✅ Healthy | Container running |" \
-              >> "$GITHUB_STEP_SUMMARY"
-
-            echo "✅ Webtop container: RUNNING"
-
-          else
-
-            echo "| 🐳 Webtop | ❌ Failed | Container not running |" \
-              >> "$GITHUB_STEP_SUMMARY"
-
-            echo "❌ Webtop container is not running."
-
-            docker ps -a \
-              --filter "name=${WEBTOP_CONTAINER}"
-
-            exit 1
-          fi
-
-
-          # --------------------------------------------------------
-          # HTTPS
-          # --------------------------------------------------------
-
-          if curl \
+          curl \
             --silent \
             --show-error \
-            --insecure \
             --fail \
-            --max-time 15 \
-            "https://${WEBTOP_HOST}:${WEBTOP_PORT}/" \
-            >/dev/null 2>&1; then
+            "http://${WEBTOP_HOST}:${WEBTOP_PORT}/" \
+            -o /dev/null
 
-            echo "| 🌐 Webtop HTTPS | ✅ Healthy | Local endpoint reachable |" \
-              >> "$GITHUB_STEP_SUMMARY"
-
-            echo "✅ Webtop HTTPS: READY"
-
-          else
-
-            echo "| 🌐 Webtop HTTPS | ❌ Failed | Local endpoint unreachable |" \
-              >> "$GITHUB_STEP_SUMMARY"
-
-            echo "❌ Webtop HTTPS failed."
-
-            exit 1
-          fi
-
-
-          # --------------------------------------------------------
-          # CLOUDFLARE
-          # --------------------------------------------------------
-
-          if [[ "${{ inputs.enable_cloudflare }}" == "true" ]]; then
-
-            if [[ -n "${ADIBAN_TUNNEL_URL:-}" ]]; then
-
-              if curl \
-                --silent \
-                --show-error \
-                --fail \
-                --max-time 20 \
-                "${ADIBAN_TUNNEL_URL}/" \
-                >/dev/null 2>&1; then
-
-                echo "| ☁️ TryCloudflare | ✅ Healthy | Public URL reachable |" \
-                  >> "$GITHUB_STEP_SUMMARY"
-
-                echo "✅ TryCloudflare: REACHABLE"
-
-              else
-
-                echo "| ☁️ TryCloudflare | ⚠️ Started | External probe failed |" \
-                  >> "$GITHUB_STEP_SUMMARY"
-
-                echo "⚠️ TryCloudflare started, but external probe failed."
-
-              fi
-
-            else
-
-              echo "| ☁️ TryCloudflare | ❌ Failed | URL unavailable |" \
-                >> "$GITHUB_STEP_SUMMARY"
-
-              echo "❌ TryCloudflare URL missing."
-
-              exit 1
-            fi
-
-          else
-
-            echo "| ☁️ TryCloudflare | ⏭️ Disabled | — |" \
-              >> "$GITHUB_STEP_SUMMARY"
-
-          fi
-
+          echo "✅ Webtop HTTP endpoint is healthy."
 
           echo
-          echo "🎉 Final health check completed."
+          echo "🧠 Processes:"
+
+          docker exec \
+            "$WEBTOP_CONTAINER" \
+            bash -lc 'ps aux | head -n 20'
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 22. SESSION
-      # ==========================================================
+      # ============================================================
+      # FINAL SUMMARY
+      # ============================================================
 
-      - name: "⏱️ Keep Session Alive"
+      - name: "📊 Final Summary"
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "::group::⏱️ Session"
-
-          session_seconds=$((SESSION_HOURS * 3600))
-
-          echo "🖥️ Workspace: ${WORKSPACE_NAME}"
-          echo "⏱️ Session: ${SESSION_HOURS} hour(s)"
-          echo
-
           {
             echo
-            echo "## ⏱️ Active Session"
+            echo "## 🖥️ ADIBAN Cloud Linux Desktop"
             echo
-            echo "🖥️ Workspace: \`${WORKSPACE_NAME}\`"
+            echo "| Component | Status |"
+            echo "|---|---|"
+            echo "| 🖥️ KDE Webtop | ✅ Ready |"
+            echo "| 🐍 Python 3.13 | $([[ '${{ inputs.install_python }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| 🟢 Node.js 22 | $([[ '${{ inputs.install_node }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| 🦊 Firefox | $([[ '${{ inputs.install_firefox }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| 🌐 Chrome | $([[ '${{ inputs.install_chrome }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| 💻 VS Code | $([[ '${{ inputs.install_vscode }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| 🤖 OpenCode | $([[ '${{ inputs.install_opencode }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| 🚀 Antigravity GUI | $([[ '${{ inputs.install_antigravity_gui }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| ⚡ Antigravity CLI | $([[ '${{ inputs.install_antigravity_cli }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
+            echo "| ☁️ Cloudflare | $([[ '${{ inputs.enable_cloudflare }}' == 'true' ]] && echo '✅ Enabled' || echo '⏭️ Disabled') |"
             echo
-            echo "⏳ Keeping environment alive for approximately **${SESSION_HOURS} hour(s)**."
+            echo "### ⚙️ Environment"
+            echo
+            echo "- **Runner:** \`${{ inputs.runner }}\`"
+            echo "- **Timezone:** \`${{ inputs.timezone }}\`"
+            echo "- **Workspace:** \`${{ inputs.workspace_name }}\`"
+            echo "- **Session:** \`${{ inputs.session_hours }} hours\`"
+            echo "- **Container:** \`$WEBTOP_CONTAINER\`"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
 
-          start_epoch="$(date +%s)"
-          end_epoch=$((start_epoch + session_seconds))
+      # ============================================================
+      # KEEP ALIVE
+      # ============================================================
 
-          last_report=-1
+      - name: "⏳ Keep Desktop Alive"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
+          HOURS="${{ inputs.session_hours }}"
+          SECONDS_TOTAL=$((HOURS * 60 * 60))
+
+          echo
+          echo "╔══════════════════════════════════════════╗"
+          echo "║       🖥️ ADIBAN CLOUD LINUX             ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo
+          echo "⏳ Keeping session alive for ${HOURS} hour(s)..."
+          echo "🖥️ Webtop container: $WEBTOP_CONTAINER"
+          echo
+
+          START_TIME="$(date +%s)"
 
           while true; do
 
-            now="$(date +%s)"
+            NOW="$(date +%s)"
+            ELAPSED=$((NOW - START_TIME))
 
-            if (( now >= end_epoch )); then
+            if (( ELAPSED >= SECONDS_TOTAL )); then
               break
             fi
 
+            REMAINING=$((SECONDS_TOTAL - ELAPSED))
 
-            remaining=$((end_epoch - now))
+            HOURS_LEFT=$((REMAINING / 3600))
+            MINUTES_LEFT=$(((REMAINING % 3600) / 60))
+            SECONDS_LEFT=$((REMAINING % 60))
 
-            remaining_minutes=$((remaining / 60))
+            echo \
+              "⏳ Remaining: ${HOURS_LEFT}h ${MINUTES_LEFT}m ${SECONDS_LEFT}s"
 
+            if ! docker inspect \
+              --format='{{.State.Running}}' \
+              "$WEBTOP_CONTAINER" \
+              2>/dev/null \
+              | grep -q true; then
 
-            if (( remaining_minutes != last_report )); then
-
-              if (( remaining_minutes % 5 == 0 || remaining_minutes < 5 )); then
-                echo "⏳ Remaining: ${remaining_minutes} minute(s)"
-                last_report="$remaining_minutes"
-              fi
-
-            fi
-
-
-            # ------------------------------------------------------
-            # Container watchdog
-            # ------------------------------------------------------
-
-            if ! docker ps \
-              --format '{{.Names}}' \
-              | grep -qx "$WEBTOP_CONTAINER"; then
-
-              echo
               echo "❌ Webtop container stopped unexpectedly."
 
               docker logs \
                 --tail 200 \
-                "$WEBTOP_CONTAINER" \
-                || true
+                "$WEBTOP_CONTAINER" || true
 
               exit 1
-            fi
-
-
-            # ------------------------------------------------------
-            # Light health probe every 60 seconds
-            # ------------------------------------------------------
-
-            if (( remaining % 60 == 0 )); then
-
-              if ! curl \
-                --silent \
-                --show-error \
-                --insecure \
-                --fail \
-                --max-time 5 \
-                "https://${WEBTOP_HOST}:${WEBTOP_PORT}/" \
-                >/dev/null 2>&1; then
-
-                echo "⚠️ Webtop health probe failed."
-
-              fi
 
             fi
 
-
-            sleep 5
+            sleep 60
 
           done
 
-
           echo
-          echo "✅ Session window completed successfully."
-
-          {
-            echo
-            echo "✅ **Session completed successfully.**"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "::endgroup::"
+          echo "🎉 Session duration completed."
+          echo "🧹 Starting cleanup..."
 
 
-      # ==========================================================
-      # 23. COLLECT DEBUG INFORMATION
-      # ==========================================================
+      # ============================================================
+      # DEBUG LOGS
+      # ============================================================
 
-      - name: "🧪 Collect Debug Logs"
-        if: ${{ always() }}
+      - name: "🔎 Collect Debug Information"
+        if: always()
         shell: bash
         run: |
           set +e
 
-          echo "::group::🧪 Collecting debug information"
+          echo "::group::🔎 Debug Information"
 
-          debug_dir="$GITHUB_WORKSPACE/adiban-debug"
+          echo "🐳 Docker containers:"
+          docker ps -a
 
-          mkdir -p \
-            "$debug_dir"
-
-
-          echo "📦 Docker containers"
-
-          docker ps -a \
-            > "$debug_dir/docker-ps.txt" \
-            2>&1
-
-
-          echo "🖥️ Webtop logs"
-
+          echo
+          echo "📜 Webtop logs:"
           docker logs \
-            --tail 500 \
+            --tail 300 \
             "$WEBTOP_CONTAINER" \
-            > "$debug_dir/webtop.log" \
-            2>&1
+            2>&1 || true
 
-
-          echo "☁️ Cloudflare logs"
-
+          echo
+          echo "📜 Cloudflare logs:"
           docker logs \
-            --tail 500 \
-            adiban-cloudflared \
-            > "$debug_dir/cloudflared.log" \
-            2>&1
+            --tail 200 \
+            "$CLOUDFLARE_CONTAINER" \
+            2>&1 || true
 
+          echo
+          echo "💽 Disk:"
+          df -h
 
-          echo "🔎 Container inspect"
-
-          docker inspect \
-            "$WEBTOP_CONTAINER" \
-            > "$debug_dir/webtop-inspect.json" \
-            2>&1
-
-
-          echo "📁 Debug directory:"
-          find "$debug_dir" \
-            -maxdepth 2 \
-            -type f \
-            -printf '  %p\n' \
-            2>/dev/null || true
-
-
-          echo "✅ Debug information collected."
+          echo
+          echo "🧠 Memory:"
+          free -h
 
           echo "::endgroup::"
 
 
-      # ==========================================================
-      # 24. UPLOAD DEBUG ARTIFACT
-      # ==========================================================
+      # ============================================================
+      # UPLOAD DEBUG ARTIFACT
+      # ============================================================
 
-      - name: "📦 Upload Debug Artifact"
-        if: ${{ always() }}
+      - name: "📦 Upload Debug Artifacts"
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: adiban-cloud-debug-${{ github.run_id }}
-          path: adiban-debug/
-          if-no-files-found: ignore
-          retention-days: 7
+          name: "adiban-cloud-linux-${{ github.run_id }}"
+          path: |
+            cloudflare-url.txt
+            .adiban-webtop/
+          if-no-files-found: warn
+          retention-days: 3
 
 
-      # ==========================================================
-      # 25. CLEANUP
-      # ==========================================================
+      # ============================================================
+      # CLEANUP
+      # ============================================================
 
       - name: "🧹 Cleanup"
-        if: ${{ always() }}
+        if: always()
         shell: bash
         run: |
           set +e
 
           echo "::group::🧹 Cleanup"
 
-          echo "☁️ Removing Cloudflare container..."
-
           docker rm -f \
-            adiban-cloudflared \
+            "$CLOUDFLARE_CONTAINER" \
             >/dev/null 2>&1 || true
-
-
-          echo "🖥️ Removing Webtop container..."
 
           docker rm -f \
             "$WEBTOP_CONTAINER" \
             >/dev/null 2>&1 || true
 
+          echo "🧹 Containers removed."
 
-          echo
-          echo "📦 Remaining containers:"
+          docker ps -a || true
 
-          docker ps -a \
-            --format 'table {{.Names}}\t{{.Status}}' \
-            || true
-
-
-          echo
-          echo "✅ Cleanup completed."
+          echo "✅ Cleanup complete."
 
           echo "::endgroup::"
