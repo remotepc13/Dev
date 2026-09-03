@@ -1043,9 +1043,8 @@ jobs:
 
           } >> "${GITHUB_STEP_SUMMARY}"
 
-
       # ======================================================
-      # 19. SESSION MONITOR
+      # SESSION MONITOR
       # ======================================================
 
       - name: "⏱️ Monitor MT5 Session"
@@ -1053,40 +1052,70 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          SESSION_SECONDS=$(
-            ( ${{ inputs.session_minutes }} * 60 )
-          )
+          # GitHub workflow_dispatch choice inputs are strings.
+          # Convert the selected value into seconds using Bash
+          # arithmetic expansion.
+
+          SESSION_MINUTES="${{ inputs.session_minutes }}"
+
+          if ! [[ "${SESSION_MINUTES}" =~ ^[0-9]+$ ]]; then
+            echo "❌ Invalid session_minutes: ${SESSION_MINUTES}"
+            exit 1
+          fi
+
+          SESSION_SECONDS=$((SESSION_MINUTES * 60))
 
           START_TIME="$(date +%s)"
-
-          END_TIME=$(
-            ( START_TIME + SESSION_SECONDS )
-          )
+          END_TIME=$((START_TIME + SESSION_SECONDS))
 
           echo
           echo "=================================================="
-          echo "SESSION MONITOR"
+          echo "⏱️ MT5 SESSION MONITOR"
           echo "=================================================="
 
           echo
-          echo "Duration:"
-          echo "${{ inputs.session_minutes }} minutes"
+          echo "Session minutes:"
+          echo "${SESSION_MINUTES}"
 
           echo
+          echo "Session seconds:"
+          echo "${SESSION_SECONDS}"
+
+          echo
+          echo "Start:"
+          date -u -d "@${START_TIME}" \
+            '+%Y-%m-%d %H:%M:%S UTC'
+
+          echo
+          echo "Expected end:"
+          date -u -d "@${END_TIME}" \
+            '+%Y-%m-%d %H:%M:%S UTC'
+
+          echo
+          echo "=================================================="
+
 
           while true; do
 
             NOW="$(date +%s)"
 
+            # ----------------------------------------------
+            # Session completed
+            # ----------------------------------------------
+
             if (( NOW >= END_TIME )); then
 
               echo
-              echo "⏰ Session completed."
+              echo "⏰ Session duration reached."
 
               break
 
             fi
 
+
+            # ----------------------------------------------
+            # Verify container is still running
+            # ----------------------------------------------
 
             RUNNING="$(
               docker inspect \
@@ -1103,10 +1132,17 @@ jobs:
               echo "❌ MT5 container stopped unexpectedly."
 
               echo
-              echo "Recent logs:"
+              echo "Container state:"
+
+              docker inspect \
+                "${CONTAINER_NAME}" \
+                2>&1 || true
+
+              echo
+              echo "Last 200 container log lines:"
 
               docker logs \
-                --tail 150 \
+                --tail 200 \
                 "${CONTAINER_NAME}" \
                 2>&1 || true
 
@@ -1115,28 +1151,65 @@ jobs:
             fi
 
 
-            REMAINING=$(
-              ( END_TIME - NOW )
-            )
+            # ----------------------------------------------
+            # Remaining time
+            # ----------------------------------------------
 
-            MINUTES=$(
-              ( REMAINING / 60 )
-            )
+            REMAINING=$((END_TIME - NOW))
 
-            SECONDS=$(
-              ( REMAINING % 60 )
-            )
+            REMAINING_MINUTES=$((REMAINING / 60))
+            REMAINING_SECONDS=$((REMAINING % 60))
 
-            echo \
-              "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Remaining: ${MINUTES}m ${SECONDS}s"
+
+            # ----------------------------------------------
+            # Container uptime
+            # ----------------------------------------------
+
+            CONTAINER_STARTED="$(
+              docker inspect \
+                --format '{{.State.StartedAt}}' \
+                "${CONTAINER_NAME}" \
+                2>/dev/null \
+                || echo "unknown"
+            )"
+
+
+            echo
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')]"
+            echo "Container : RUNNING"
+            echo "Remaining : ${REMAINING_MINUTES}m ${REMAINING_SECONDS}s"
+            echo "Started   : ${CONTAINER_STARTED}"
+
+
+            # ----------------------------------------------
+            # Resource usage every minute
+            # ----------------------------------------------
+
+            if (( REMAINING % 60 < 30 )); then
+
+              echo
+              echo "Resource usage:"
+
+              docker stats \
+                --no-stream \
+                --format \
+                'CPU={{.CPUPerc}} | MEM={{.MemUsage}} ({{.MemPerc}}) | NET={{.NetIO}} | BLOCK={{.BlockIO}}' \
+                "${CONTAINER_NAME}" \
+                2>/dev/null \
+                || true
+
+            fi
+
 
             sleep 30
 
           done
 
-          echo
-          echo "✅ MT5 session finished normally."
 
+          echo
+          echo "=================================================="
+          echo "✅ MT5 SESSION COMPLETED"
+          echo "=================================================="
 
       # ======================================================
       # 20. COLLECT DIAGNOSTICS
