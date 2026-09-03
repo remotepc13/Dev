@@ -1,0 +1,741 @@
+name: KDE Plasma Web Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      workspace_name:
+        description: "Desktop workspace name"
+        required: false
+        default: "adiban-kde"
+        type: string
+
+      keep_alive_minutes:
+        description: "Keep desktop alive for N minutes"
+        required: false
+        default: "120"
+        type: string
+
+      runner:
+        description: "GitHub runner"
+        required: false
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-26.04
+
+      webtop_image:
+        description: "Webtop image"
+        required: false
+        default: "lscr.io/linuxserver/webtop:ubuntu-kde"
+        type: string
+
+      timezone:
+        description: "Desktop timezone"
+        required: false
+        default: "Europe/Berlin"
+        type: string
+
+      install_dev_tools:
+        description: "Install development tools"
+        required: false
+        default: true
+        type: boolean
+
+      install_ai_tools:
+        description: "Install AI / CLI tools"
+        required: false
+        default: true
+        type: boolean
+
+      install_extra_apps:
+        description: "Install additional GUI applications"
+        required: false
+        default: true
+        type: boolean
+
+      cloudflare:
+        description: "Create public TryCloudflare URL"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kde-desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  desktop:
+
+    name: KDE Plasma Web Desktop
+
+    runs-on: ${{ inputs.runner }}
+
+    timeout-minutes: 360
+
+    env:
+      CONTAINER_NAME: ${{ inputs.workspace_name }}
+      WEBTOP_IMAGE: ${{ inputs.webtop_image }}
+      TZ: ${{ inputs.timezone }}
+      WEBTOP_PORT: 3001
+      WORKSPACE_DIR: ${{ github.workspace }}/workspace
+
+    steps:
+
+      # ============================================================
+      # 1. Repository
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # 2. Runner diagnostics
+      # ============================================================
+
+      - name: Inspect GitHub Runner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo " GitHub Runner"
+          echo "=========================================="
+
+          echo
+          echo "OS:"
+          cat /etc/os-release
+
+          echo
+          echo "Kernel:"
+          uname -a
+
+          echo
+          echo "Architecture:"
+          uname -m
+
+          echo
+          echo "CPU:"
+          nproc
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Disk:"
+          df -h /
+
+          echo
+          echo "Docker:"
+          docker version
+
+          echo
+          echo "Docker Compose:"
+          docker compose version || true
+
+
+      # ============================================================
+      # 3. Workspace
+      # ============================================================
+
+      - name: Prepare persistent workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${WORKSPACE_DIR}"
+
+          chmod 777 "${WORKSPACE_DIR}"
+
+          echo "Workspace:"
+          ls -la "${WORKSPACE_DIR}"
+
+
+      # ============================================================
+      # 4. Pull latest Webtop
+      # ============================================================
+
+      - name: Pull KDE Webtop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Image:"
+          echo "${WEBTOP_IMAGE}"
+
+          docker pull "${WEBTOP_IMAGE}"
+
+          echo
+          echo "Image metadata:"
+
+          docker image inspect "${WEBTOP_IMAGE}" \
+            --format '
+          Repository: {{index .RepoTags 0}}
+          Architecture: {{.Architecture}}
+          OS: {{.Os}}
+          Created: {{.Created}}
+          Size: {{.Size}}
+          '
+
+
+      # ============================================================
+      # 5. Start KDE Webtop
+      # ============================================================
+
+      - name: Start KDE Plasma
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --hostname "${CONTAINER_NAME}" \
+            --shm-size=2gb \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ="${TZ}" \
+            -e TITLE="Adiban KDE Desktop" \
+            -p "127.0.0.1:${WEBTOP_PORT}:3001" \
+            -v "${WORKSPACE_DIR}:/config/workspace" \
+            --security-opt seccomp=unconfined \
+            "${WEBTOP_IMAGE}"
+
+          echo
+          echo "Container:"
+          docker ps --filter "name=${CONTAINER_NAME}"
+
+
+      # ============================================================
+      # 6. Wait for Webtop
+      # ============================================================
+
+      - name: Wait for KDE Desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Waiting for KDE Webtop..."
+
+          for i in $(seq 1 90); do
+
+            if curl \
+              --silent \
+              --show-error \
+              --fail \
+              --insecure \
+              "https://127.0.0.1:${WEBTOP_PORT}/" \
+              >/dev/null 2>&1
+            then
+              echo
+              echo "KDE Webtop is READY."
+              exit 0
+            fi
+
+            echo "Waiting... ${i}/90"
+
+            sleep 3
+
+          done
+
+          echo
+          echo "ERROR: Webtop failed to start."
+
+          docker ps -a
+
+          echo
+          echo "Container logs:"
+
+          docker logs \
+            --tail 300 \
+            "${CONTAINER_NAME}"
+
+          exit 1
+
+
+      # ============================================================
+      # 7. Development environment
+      # ============================================================
+
+      - name: Install development tools
+        if: ${{ inputs.install_dev_tools }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec "${CONTAINER_NAME}" bash -lc '
+
+            set -e
+
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update
+
+            apt-get install -y \
+              git \
+              curl \
+              wget \
+              unzip \
+              zip \
+              p7zip-full \
+              jq \
+              tree \
+              htop \
+              btop \
+              tmux \
+              vim \
+              nano \
+              ripgrep \
+              fd-find \
+              build-essential \
+              pkg-config \
+              ca-certificates \
+              software-properties-common \
+              python3 \
+              python3-pip \
+              python3-venv \
+              python3-dev
+
+            apt-get clean
+
+            rm -rf /var/lib/apt/lists/*
+          '
+
+
+      # ============================================================
+      # 8. AI / CLI environment
+      # ============================================================
+
+      - name: Install AI CLI tools
+        if: ${{ inputs.install_ai_tools }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec "${CONTAINER_NAME}" bash -lc '
+
+            set -e
+
+            # Node.js / npm
+            if ! command -v node >/dev/null 2>&1; then
+
+              curl -fsSL https://deb.nodesource.com/setup_22.x \
+                | bash -
+
+              apt-get install -y nodejs
+
+            fi
+
+            echo
+            echo "Node:"
+            node --version
+
+            echo
+            echo "NPM:"
+            npm --version
+
+            # Useful global CLI tools
+            npm install -g \
+              pnpm \
+              yarn \
+              typescript \
+              tsx
+
+            echo
+            echo "AI development environment ready."
+          '
+
+
+      # ============================================================
+      # 9. Extra KDE applications
+      # ============================================================
+
+      - name: Install KDE applications
+        if: ${{ inputs.install_extra_apps }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec "${CONTAINER_NAME}" bash -lc '
+
+            set -e
+
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update
+
+            apt-get install -y \
+              konsole \
+              dolphin \
+              kate \
+              ark \
+              gwenview \
+              okular \
+              filelight \
+              kcalc \
+              plasma-systemmonitor \
+              ffmpeg \
+              imagemagick \
+              dbus-x11 \
+              x11-utils
+
+            apt-get clean
+
+            rm -rf /var/lib/apt/lists/*
+          '
+
+
+      # ============================================================
+      # 10. Desktop diagnostics
+      # ============================================================
+
+      - name: Verify KDE environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec "${CONTAINER_NAME}" bash -lc '
+
+            echo "=========================================="
+            echo " KDE Environment"
+            echo "=========================================="
+
+            echo
+            echo "OS:"
+            cat /etc/os-release
+
+            echo
+            echo "Kernel:"
+            uname -a
+
+            echo
+            echo "Architecture:"
+            uname -m
+
+            echo
+            echo "User:"
+            id
+
+            echo
+            echo "Desktop:"
+            echo "${XDG_CURRENT_DESKTOP:-unknown}"
+
+            echo
+            echo "Session:"
+            echo "${XDG_SESSION_TYPE:-unknown}"
+
+            echo
+            echo "KDE:"
+            plasmashell --version 2>/dev/null || true
+
+            echo
+            echo "Firefox:"
+            firefox --version 2>/dev/null || true
+
+            echo
+            echo "Node:"
+            node --version 2>/dev/null || true
+
+            echo
+            echo "Python:"
+            python3 --version 2>/dev/null || true
+
+            echo
+            echo "Git:"
+            git --version
+
+            echo
+            echo "Disk:"
+            df -h /
+          '
+
+
+      # ============================================================
+      # 11. Install Cloudflare
+      # ============================================================
+
+      - name: Install cloudflared
+        if: ${{ inputs.cloudflare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCH="$(dpkg --print-architecture)"
+
+          case "${ARCH}" in
+
+            amd64)
+              CF_ARCH="amd64"
+              ;;
+
+            arm64)
+              CF_ARCH="arm64"
+              ;;
+
+            *)
+              echo "Unsupported architecture: ${ARCH}"
+              exit 1
+              ;;
+
+          esac
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --output cloudflared.deb \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb"
+
+          sudo dpkg -i cloudflared.deb
+
+          rm -f cloudflared.deb
+
+          cloudflared --version
+
+
+      # ============================================================
+      # 12. Public tunnel
+      # ============================================================
+
+      - name: Start Cloudflare Quick Tunnel
+        if: ${{ inputs.cloudflare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f cloudflare.log
+          rm -f cloudflare.url
+
+          echo "Starting Cloudflare Tunnel..."
+
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url "https://127.0.0.1:${WEBTOP_PORT}" \
+            --no-tls-verify \
+            > cloudflare.log 2>&1 &
+
+          echo $! > cloudflare.pid
+
+          echo
+          echo "Waiting for public URL..."
+
+          for i in $(seq 1 90); do
+
+            URL="$(
+              grep -Eo \
+                'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+                cloudflare.log \
+                | head -n 1 \
+                || true
+            )"
+
+            if [ -n "${URL}" ]; then
+
+              echo "${URL}" > cloudflare.url
+
+              echo
+              echo "=========================================="
+              echo " 🌐 KDE DESKTOP"
+              echo "=========================================="
+              echo
+              echo "${URL}"
+              echo
+              echo "=========================================="
+
+              break
+
+            fi
+
+            sleep 2
+
+          done
+
+          if [ ! -s cloudflare.url ]; then
+
+            echo "Cloudflare failed."
+
+            cat cloudflare.log
+
+            exit 1
+
+          fi
+
+
+      # ============================================================
+      # 13. GitHub Summary
+      # ============================================================
+
+      - name: Publish desktop information
+        if: ${{ inputs.cloudflare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="$(cat cloudflare.url)"
+
+          {
+            echo "# 🖥️ Adiban KDE Web Desktop"
+            echo
+            echo "## 🌐 Desktop"
+            echo
+            echo "**${URL}**"
+            echo
+            echo "## 🐧 System"
+            echo
+            echo "- Runner: \`${{ inputs.runner }}\`"
+            echo "- Desktop: KDE Plasma"
+            echo "- Display: Selkies"
+            echo "- Compositor: KWin"
+            echo "- Display protocol: Wayland"
+            echo "- Webtop: \`${WEBTOP_IMAGE}\`"
+            echo "- Timezone: \`${TZ}\`"
+            echo
+            echo "## 🧰 Included"
+            echo
+            echo "- KDE Plasma"
+            echo "- Dolphin"
+            echo "- Konsole"
+            echo "- Kate"
+            echo "- Firefox"
+            echo "- Python"
+            echo "- Node.js"
+            echo "- Git"
+            echo "- Build tools"
+            echo "- FFmpeg"
+            echo "- ImageMagick"
+            echo
+            echo "## ⏱️ Session"
+            echo
+            echo "Keep alive: **${{ inputs.keep_alive_minutes }} minutes**"
+            echo
+            echo "> ⚠️ GitHub-hosted runners are ephemeral."
+            echo "> All non-persisted data disappears after the job."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+
+      # ============================================================
+      # 14. Keep alive
+      # ============================================================
+      - name: Keep desktop alive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MINUTES="${{ inputs.keep_alive_minutes }}"
+
+          if ! [[ "${MINUTES}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid keep_alive_minutes."
+            exit 1
+          fi
+
+          if [ "${MINUTES}" -lt 1 ]; then
+            echo "keep_alive_minutes must be >= 1."
+            exit 1
+          fi
+
+          END_TIME=$(( $(date +%s) + MINUTES * 60 ))
+
+          echo
+          echo "=========================================="
+          echo " KDE Plasma Desktop Running"
+          echo "=========================================="
+
+          if [ -f cloudflare.url ]; then
+            echo
+            echo "URL:"
+            cat cloudflare.url
+          fi
+
+          echo
+
+          while true; do
+            NOW="$(date +%s)"
+
+            if [ "${NOW}" -ge "${END_TIME}" ]; then
+              break
+            fi
+
+            REMAINING=$(( (END_TIME - NOW) / 60 ))
+
+            echo \
+              "[$(date '+%H:%M:%S')] Remaining: ${REMAINING} min"
+
+            sleep 30
+          done
+
+          echo
+          echo "Session finished."
+      # ============================================================
+      # 15. Diagnostics
+      # ============================================================
+
+      - name: Collect diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "=========================================="
+          echo " Containers"
+          echo "=========================================="
+
+          docker ps -a
+
+          echo
+          echo "=========================================="
+          echo " KDE Webtop Logs"
+          echo "=========================================="
+
+          docker logs \
+            --tail 400 \
+            "${CONTAINER_NAME}" || true
+
+          echo
+          echo "=========================================="
+          echo " Cloudflare Logs"
+          echo "=========================================="
+
+          if [ -f cloudflare.log ]; then
+            tail -n 300 cloudflare.log
+          fi
+
+
+      # ============================================================
+      # 16. Cleanup
+      # ============================================================
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "Stopping Cloudflare..."
+
+          if [ -f cloudflare.pid ]; then
+            kill "$(cat cloudflare.pid)" 2>/dev/null || true
+          fi
+
+          echo "Stopping Webtop..."
+
+          docker rm -f \
+            "${CONTAINER_NAME}" \
+            2>/dev/null || true
+
+          echo
+          echo "Docker disk usage:"
+
+          docker system df || true
+
+          echo
+          echo "Cleanup complete."
