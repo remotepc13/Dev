@@ -1287,16 +1287,12 @@ jobs:
           HOURS="$SESSION_HOURS"
 
           if ! [[ "$HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-
-            echo "Invalid SESSION_HOURS: $HOURS"
-
+            echo "❌ Invalid SESSION_HOURS: $HOURS"
             exit 1
-
           fi
 
           SECONDS_TO_WAIT="$(
-            awk \
-              "BEGIN {print int($HOURS * 3600)}"
+            awk "BEGIN {print int($HOURS * 3600)}"
           )"
 
           echo
@@ -1313,11 +1309,9 @@ jobs:
           echo "https://${WEBTOP_HOST}:${WEBTOP_HTTPS_PORT}"
 
           if [ -n "${TUNNEL_URL:-}" ]; then
-
             echo
             echo "🌐 Public URL:"
             echo "$TUNNEL_URL"
-
           fi
 
           echo
@@ -1337,15 +1331,15 @@ jobs:
 
             REMAINING=$((SECONDS_TO_WAIT - ELAPSED))
 
-            HOURS_LEFT=$((REMAINING / 3600))
+            HOURS_LEFT=$(( REMAINING / 3600 ))
 
-            MINUTES_LEFT=$(
-              (REMAINING % 3600) / 60
-            )
+            MINUTES_LEFT=$(( (REMAINING % 3600) / 60 ))
+
+            SECONDS_LEFT=$(( REMAINING % 60 ))
 
             echo \
               "[$(date '+%Y-%m-%d %H:%M:%S')] " \
-              "Remaining: ${HOURS_LEFT}h ${MINUTES_LEFT}m"
+              "Remaining: ${HOURS_LEFT}h ${MINUTES_LEFT}m ${SECONDS_LEFT}s"
 
             sleep 60
 
@@ -1355,8 +1349,6 @@ jobs:
           echo "============================================================"
           echo "⏰ SESSION TIME COMPLETED"
           echo "============================================================"
-
-
       # ============================================================
       # DEBUG
       # ============================================================
