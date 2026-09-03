@@ -1,98 +1,132 @@
 #!/usr/bin/env bash
 
-set -Eeuo pipefail
-
 # ============================================================
-# MT5 Cloud Desktop
-# Runtime / Lifecycle Script
+# MT5 CLOUD DESKTOP
+# ============================================================
 #
-# Architecture:
+# GitHub Actions runtime for:
 #
-# GitHub Actions
-#       ↓
-#     mt5.yml
-#       ↓
-#     mt5.sh
-#       ↓
-# docker pull
-#       ↓
-# gmag11/metatrader5_vnc
-#       ↓
-# ┌──────────────────────────────┐
-# │ KasmVNC       :3000          │
-# │ MetaTrader 5                 │
-# │ Wine                         │
-# │ Python                       │
-# │ mt5linux / RPyC :8001        │
-# └──────────────────────────────┘
-#       ↓
-# Cloudflare Tunnel
-#       ↓
-# Browser
+#   MetaTrader 5
+#   Wine
+#   KasmVNC
+#   mt5linux
+#   RPyC
+#   Cloudflare Quick Tunnel
+#
+# Design:
+#
+#   GitHub Runner
+#       │
+#       ▼
+#   Docker Container
+#       │
+#       ├── KasmVNC :3000
+#       │
+#       └── mt5linux/RPyC :8001
+#                │
+#                ▼
+#            Python / MT5
+#
+# Cloudflare:
+#
+#   Internet
+#      │
+#      ▼
+#   trycloudflare.com
+#      │
+#      ▼
+#   127.0.0.1:3000
 #
 # IMPORTANT:
+#
 # - No Docker build
-# - No Docker cache
-# - No --init
-# - Port 8001 stays private
-# - Cloudflare exposes only port 3000
-# - TCP and HTTP health checks are separate
+# - No GitHub Cache
+# - No Docker --init
+# - Port 8001 remains private
+# - Only KasmVNC :3000 is tunneled
 # ============================================================
 
 
 # ============================================================
-# Configuration
+# Bash Safety
+# ============================================================
+
+set -Eeuo pipefail
+
+
+# ============================================================
+# Basic Variables
 # ============================================================
 
 CONTAINER_NAME="${CONTAINER_NAME:-mt5-cloud}"
 
 MT5_IMAGE="${MT5_IMAGE:-gmag11/metatrader5_vnc:latest}"
 
-MT5_WEB_PORT="${MT5_WEB_PORT:-3000}"
+
 MT5_WEB_BIND="${MT5_WEB_BIND:-127.0.0.1}"
 
-MT5_API_PORT="${MT5_API_PORT:-8001}"
+MT5_WEB_PORT="${MT5_WEB_PORT:-3000}"
+
+
 MT5_API_BIND="${MT5_API_BIND:-127.0.0.1}"
 
+MT5_API_PORT="${MT5_API_PORT:-8001}"
+
+
 MT5_WEB_USER="${MT5_WEB_USER:-trader}"
+
 MT5_WEB_PASSWORD="${MT5_WEB_PASSWORD:-MT5-Demo-2026-StrongPassword!}"
+
 
 TZ="${TZ:-UTC}"
 
-WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$PWD}"
+
+# ============================================================
+# GitHub Workspace
+# ============================================================
+
+WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
+
 
 LOG_DIR="${LOG_DIR:-${WORKSPACE_ROOT}/logs}"
+
 TUNNEL_DIR="${TUNNEL_DIR:-${WORKSPACE_ROOT}/tunnel}"
+
 MT5_DATA_DIR="${MT5_DATA_DIR:-${WORKSPACE_ROOT}/mt5_data}"
 
+
 CLOUDFLARE_LOG="${CLOUDFLARE_LOG:-${TUNNEL_DIR}/cloudflared.log}"
+
 TUNNEL_URL_FILE="${TUNNEL_URL_FILE:-${TUNNEL_DIR}/tunnel_url.txt}"
 
-SESSION_MINUTES="${INPUT_SESSION_MINUTES:-60}"
+
+# ============================================================
+# Inputs
+# ============================================================
+
 RESOLUTION="${INPUT_RESOLUTION:-1920x1080}"
 
+SESSION_MINUTES="${INPUT_SESSION_MINUTES:-60}"
+
 ENABLE_TUNNEL="${INPUT_ENABLE_TUNNEL:-true}"
+
 SAVE_ARTIFACTS="${INPUT_SAVE_ARTIFACTS:-true}"
+
 CLEAN_WORKSPACE="${INPUT_CLEAN_WORKSPACE:-false}"
 
 
 # ============================================================
-# Health Check Configuration
+# Timeouts
 # ============================================================
 
-# TCP port startup timeout.
 TCP_TIMEOUT_SECONDS="${TCP_TIMEOUT_SECONDS:-120}"
 
-# HTTP service startup timeout.
 HTTP_TIMEOUT_SECONDS="${HTTP_TIMEOUT_SECONDS:-120}"
 
-# Cloudflare startup timeout.
 TUNNEL_TIMEOUT_SECONDS="${TUNNEL_TIMEOUT_SECONDS:-120}"
 
-# How often to retry health checks.
 HEALTH_INTERVAL_SECONDS="${HEALTH_INTERVAL_SECONDS:-3}"
 
-# Public Cloudflare request timeout.
 PUBLIC_HTTP_TIMEOUT_SECONDS="${PUBLIC_HTTP_TIMEOUT_SECONDS:-20}"
 
 
@@ -102,72 +136,138 @@ PUBLIC_HTTP_TIMEOUT_SECONDS="${PUBLIC_HTTP_TIMEOUT_SECONDS:-20}"
 
 CLOUDFLARED_PID=""
 
+MAIN_LOG=""
+
 START_TIME_UNIX="0"
+
 END_TIME_UNIX="0"
 
-MAIN_LOG=""
+
+# ============================================================
+# Directories
+# ============================================================
+
+mkdir -p \
+  "${LOG_DIR}" \
+  "${TUNNEL_DIR}" \
+  "${MT5_DATA_DIR}"
+
+
+MAIN_LOG="${LOG_DIR}/mt5-runtime.log"
+
+touch "${MAIN_LOG}"
 
 
 # ============================================================
 # Logging
 # ============================================================
 
-mkdir -p \
-  "${LOG_DIR}" \
-  "${TUNNEL_DIR}"
-
-MAIN_LOG="${LOG_DIR}/mt5-runtime.log"
-
-touch "${MAIN_LOG}"
-
 exec > >(tee -a "${MAIN_LOG}") 2>&1
 
 
 timestamp() {
+
   date -u '+%Y-%m-%d %H:%M:%S UTC'
+
 }
 
 
 log() {
+
   echo
+
   echo "[$(timestamp)] $*"
+
 }
 
 
 section() {
+
   echo
   echo "============================================================"
   echo "$*"
   echo "============================================================"
+  echo
+
 }
 
 
 die() {
+
   echo
+
   echo "❌ ERROR: $*"
+
   exit 1
-}
 
-
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-
-is_true() {
-  case "${1,,}" in
-    true|1|yes|y|on)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
 }
 
 
 # ============================================================
-# Container Helpers
+# Error Handler
+# ============================================================
+
+on_error() {
+
+  local exit_code=$?
+
+  local line_number="${BASH_LINENO[0]:-unknown}"
+
+  local command="${BASH_COMMAND:-unknown}"
+
+
+  echo
+
+  echo "============================================================"
+  echo "❌ COMMAND FAILED"
+  echo "============================================================"
+
+  echo
+
+  echo "Exit code : ${exit_code}"
+
+  echo "Line      : ${line_number}"
+
+  echo "Command   : ${command}"
+
+  echo
+
+  echo "Container status:"
+
+  docker inspect \
+    --format \
+    'Running={{.State.Running}} | Status={{.State.Status}} | ExitCode={{.State.ExitCode}} | Started={{.State.StartedAt}}' \
+    "${CONTAINER_NAME}" \
+    2>/dev/null \
+    || true
+
+
+  echo
+
+  echo "Recent container logs:"
+
+  docker logs \
+    --tail 200 \
+    "${CONTAINER_NAME}" \
+    2>&1 \
+    || true
+
+
+  echo
+
+  echo "============================================================"
+
+
+  return "${exit_code}"
+
+}
+
+
+trap on_error ERR
+
+
+# ============================================================
+# Container Functions
 # ============================================================
 
 container_exists() {
@@ -181,12 +281,18 @@ container_exists() {
 
 container_running() {
 
-  [[ "$(
+  local state
+
+  state="$(
     docker inspect \
       --format '{{.State.Running}}' \
       "${CONTAINER_NAME}" \
-      2>/dev/null || echo "false"
-  )" == "true" ]]
+      2>/dev/null \
+      || echo "false"
+  )"
+
+
+  [[ "${state}" == "true" ]]
 
 }
 
@@ -194,16 +300,23 @@ container_running() {
 show_container_logs() {
 
   echo
+
   echo "------------------------------------------------------------"
-  echo "📋 Recent MT5 container logs"
+
+  echo "📋 MT5 container logs"
+
   echo "------------------------------------------------------------"
+
 
   docker logs \
-    --tail 400 \
+    --tail 500 \
     "${CONTAINER_NAME}" \
-    2>&1 || true
+    2>&1 \
+    || true
+
 
   echo
+
   echo "------------------------------------------------------------"
 
 }
@@ -219,27 +332,35 @@ cleanup() {
 
   set +e
 
+
   section "🧹 Cleanup"
 
+
   # ----------------------------------------------------------
-  # Stop Cloudflare
+  # Cloudflare
   # ----------------------------------------------------------
 
   if [[ -n "${CLOUDFLARED_PID}" ]]; then
 
-    if kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
+    if kill -0 \
+      "${CLOUDFLARED_PID}" \
+      2>/dev/null; then
 
-      log "Stopping Cloudflare process..."
+      log "Stopping Cloudflare..."
 
       kill \
         "${CLOUDFLARED_PID}" \
-        2>/dev/null || true
+        2>/dev/null \
+        || true
+
 
       sleep 2
 
+
       kill -9 \
         "${CLOUDFLARED_PID}" \
-        2>/dev/null || true
+        2>/dev/null \
+        || true
 
     fi
 
@@ -247,7 +368,7 @@ cleanup() {
 
 
   # ----------------------------------------------------------
-  # Stop MT5
+  # Docker container
   # ----------------------------------------------------------
 
   if container_exists; then
@@ -256,32 +377,41 @@ cleanup() {
 
       log "Stopping MT5 container..."
 
+
       docker stop \
         --timeout 15 \
         "${CONTAINER_NAME}" \
-        2>&1 || true
+        2>&1 \
+        || true
 
     fi
 
 
     log "Removing MT5 container..."
 
+
     docker rm \
       -f \
       "${CONTAINER_NAME}" \
-      2>&1 || true
+      2>&1 \
+      || true
 
   fi
 
 
   echo
+
   echo "============================================================"
+
   echo "🏁 Cleanup completed"
+
   echo "Exit code: ${exit_code}"
+
   echo "============================================================"
 
 
-  exit "${exit_code}"
+  return "${exit_code}"
+
 }
 
 
@@ -296,51 +426,83 @@ section "🔎 Validate configuration"
 
 
 if ! [[ "${SESSION_MINUTES}" =~ ^[0-9]+$ ]]; then
-  die "Invalid session duration: ${SESSION_MINUTES}"
+
+  die "Invalid SESSION_MINUTES: ${SESSION_MINUTES}"
+
 fi
 
 
 if (( SESSION_MINUTES < 1 )); then
-  die "Session duration must be greater than zero."
+
+  die "Session duration must be at least 1 minute."
+
+fi
+
+
+if (( SESSION_MINUTES > 300 )); then
+
+  die "Session duration cannot exceed 300 minutes."
+
 fi
 
 
 if ! [[ "${RESOLUTION}" =~ ^[0-9]+x[0-9]+$ ]]; then
+
   die "Invalid resolution: ${RESOLUTION}"
+
 fi
 
 
 if ! [[ "${TCP_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]]; then
-  die "Invalid TCP timeout: ${TCP_TIMEOUT_SECONDS}"
+
+  die "Invalid TCP timeout."
+
 fi
 
 
 if ! [[ "${HTTP_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]]; then
-  die "Invalid HTTP timeout: ${HTTP_TIMEOUT_SECONDS}"
+
+  die "Invalid HTTP timeout."
+
 fi
 
 
 if ! [[ "${TUNNEL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]]; then
-  die "Invalid tunnel timeout: ${TUNNEL_TIMEOUT_SECONDS}"
+
+  die "Invalid tunnel timeout."
+
 fi
 
 
 if ! [[ "${HEALTH_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]]; then
-  die "Invalid health interval: ${HEALTH_INTERVAL_SECONDS}"
+
+  die "Invalid health interval."
+
 fi
 
 
 log "Container       : ${CONTAINER_NAME}"
+
 log "Image           : ${MT5_IMAGE}"
+
 log "Resolution      : ${RESOLUTION}"
+
 log "Session         : ${SESSION_MINUTES} minutes"
+
 log "Web endpoint    : ${MT5_WEB_BIND}:${MT5_WEB_PORT}"
+
 log "API endpoint    : ${MT5_API_BIND}:${MT5_API_PORT}"
+
 log "Tunnel enabled  : ${ENABLE_TUNNEL}"
+
 log "Clean workspace : ${CLEAN_WORKSPACE}"
 
+log "Save artifacts  : ${SAVE_ARTIFACTS}"
+
 echo
+
 echo "Web user        : ${MT5_WEB_USER}"
+
 echo "Web password    : ${MT5_WEB_PASSWORD}"
 
 
@@ -352,41 +514,56 @@ section "🖥️ Runner diagnostics"
 
 
 log "Operating system:"
+
 cat /etc/os-release || true
 
 
 echo
+
 log "Kernel:"
+
 uname -a || true
 
 
 echo
+
 log "Architecture:"
+
 uname -m
 
 
 echo
+
 log "CPU:"
+
 nproc || true
 
 
 echo
+
 log "Memory:"
+
 free -h || true
 
 
 echo
+
 log "Disk:"
+
 df -h / || true
 
 
 echo
+
 log "Docker:"
+
 docker --version || true
 
 
 echo
+
 log "Docker server:"
+
 docker info \
   --format \
   'Server={{.ServerVersion}} | Storage={{.Driver}} | CPUs={{.NCPU}} | Memory={{.MemTotal}}' \
@@ -395,7 +572,7 @@ docker info \
 
 
 # ============================================================
-# Validate Architecture
+# Architecture
 # ============================================================
 
 section "🧬 Validate architecture"
@@ -406,20 +583,19 @@ ARCH="$(uname -m)"
 
 if [[ "${ARCH}" != "x86_64" ]]; then
 
-  die "Unsupported architecture: ${ARCH}. MT5 Docker image requires AMD64/x86_64."
+  die "This MT5 image requires x86_64 / AMD64. Current architecture: ${ARCH}"
 
 fi
 
 
-log "Architecture: AMD64 / x86_64"
-log "✅ Architecture supported."
+log "✅ AMD64 / x86_64 detected."
 
 
 # ============================================================
-# Install Minimal Dependencies
+# Install Dependencies
 # ============================================================
 
-section "📦 Install minimal dependencies"
+section "📦 Install runtime dependencies"
 
 
 export DEBIAN_FRONTEND=noninteractive
@@ -428,39 +604,40 @@ export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
 
 
-sudo apt-get install -y -qq \
+sudo apt-get install \
+  -y \
+  -qq \
   ca-certificates \
   curl \
   jq \
   netcat-openbsd \
-  procps \
-  unzip
+  procps
 
 
-log "✅ Base dependencies installed."
+log "✅ Dependencies installed."
 
 
 # ============================================================
-# Install Cloudflare
+# Install Cloudflared
 # ============================================================
 
 install_cloudflared() {
 
-  if command_exists cloudflared; then
+  if command -v cloudflared >/dev/null 2>&1; then
 
-    log "cloudflared already installed."
+    log "cloudflared is already installed."
 
-    cloudflared --version || true
+    cloudflared --version
 
     return 0
 
   fi
 
 
-  log "Installing latest cloudflared..."
+  log "Downloading latest cloudflared..."
 
 
-  local package="/tmp/cloudflared.deb"
+  local package="/tmp/cloudflared-amd64.deb"
 
 
   rm -f "${package}"
@@ -473,17 +650,21 @@ install_cloudflared() {
     --location \
     --retry 3 \
     --retry-delay 2 \
+    --connect-timeout 15 \
+    --max-time 120 \
     -o "${package}" \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
 
 
-  sudo dpkg -i "${package}"
+  sudo dpkg \
+    -i \
+    "${package}"
 
 
   rm -f "${package}"
 
 
-  if ! command_exists cloudflared; then
+  if ! command -v cloudflared >/dev/null 2>&1; then
 
     die "cloudflared installation failed."
 
@@ -498,7 +679,7 @@ install_cloudflared() {
 }
 
 
-if is_true "${ENABLE_TUNNEL}"; then
+if [[ "${ENABLE_TUNNEL,,}" == "true" ]]; then
 
   section "☁️ Cloudflare Tunnel"
 
@@ -524,30 +705,35 @@ mkdir -p \
   "${MT5_DATA_DIR}"
 
 
-if is_true "${CLEAN_WORKSPACE}"; then
+rm -f \
+  "${TUNNEL_URL_FILE}" \
+  "${CLOUDFLARE_LOG}" \
+  "${LOG_DIR}/http-health-error.txt"
 
-  log "Cleaning MT5 workspace..."
 
-  find "${MT5_DATA_DIR}" \
+if [[ "${CLEAN_WORKSPACE,,}" == "true" ]]; then
+
+  log "🧹 Cleaning MT5 workspace..."
+
+
+  find \
+    "${MT5_DATA_DIR}" \
     -mindepth 1 \
     -maxdepth 1 \
     -exec rm -rf {} +
+
 
   log "✅ MT5 workspace cleaned."
 
 else
 
-  log "Keeping current workspace."
+  log "Keeping MT5 workspace."
 
 fi
 
 
-rm -f \
-  "${TUNNEL_URL_FILE}"
-
-
 # ============================================================
-# Remove Stale Container
+# Remove Existing Container
 # ============================================================
 
 section "🧹 Remove stale MT5 container"
@@ -555,46 +741,43 @@ section "🧹 Remove stale MT5 container"
 
 if container_exists; then
 
-  log "Existing container detected."
+  log "Existing container found."
 
 
   docker stop \
     --timeout 10 \
     "${CONTAINER_NAME}" \
-    2>&1 || true
+    2>&1 \
+    || true
 
 
   docker rm \
     -f \
     "${CONTAINER_NAME}" \
-    2>&1 || true
+    2>&1 \
+    || true
 
 
-  log "✅ Stale container removed."
+  log "✅ Old container removed."
 
 else
 
-  log "No stale container found."
+  log "No existing MT5 container."
 
 fi
 
 
 # ============================================================
-# Pull MT5 Image
+# Pull Image
 # ============================================================
 
-section "🐳 Pull MT5 Docker image"
+section "🐳 Pull MT5 image"
 
 
-log "Pulling:"
-log "${MT5_IMAGE}"
+log "Pulling image:"
 
+echo "${MT5_IMAGE}"
 
-# Intentionally NO:
-# - docker build
-# - Docker cache
-#
-# GitHub-hosted runners are ephemeral.
 
 docker pull \
   "${MT5_IMAGE}"
@@ -604,36 +787,26 @@ log "✅ MT5 image pulled successfully."
 
 
 # ============================================================
-# Verify Image
+# Image Information
 # ============================================================
 
-section "🔍 Verify Docker image"
+section "🔍 Docker image information"
 
 
 docker image inspect \
   "${MT5_IMAGE}" \
   --format \
-  'Repository={{index .RepoTags 0}} | ID={{.Id}} | Size={{.Size}} bytes' \
-  || die "Unable to inspect MT5 image."
+  'Repository={{index .RepoTags 0}} | ID={{.Id}} | Size={{.Size}} bytes'
 
 
 # ============================================================
-# Start MT5 Container
+# Start Container
 # ============================================================
 
 section "🚀 Start MetaTrader 5 container"
 
 
-log "Starting container..."
-
-
-# IMPORTANT:
-#
-# DO NOT USE --init.
-#
-# The upstream image uses s6-overlay and expects /init
-# to be PID 1. Docker --init would insert tini as PID 1
-# and break s6-overlay.
+log "Starting Docker container..."
 
 
 docker run \
@@ -654,26 +827,19 @@ docker run \
   "${MT5_IMAGE}"
 
 
-log "Container started."
+log "✅ Container started."
 
 
 # ============================================================
-# Verify Container PID
+# Container Verification
 # ============================================================
 
-section "🔍 Verify container"
+section "🔍 Verify MT5 container"
 
 
 CONTAINER_PID="$(
   docker inspect \
     --format '{{.State.Pid}}' \
-    "${CONTAINER_NAME}"
-)"
-
-
-CONTAINER_RUNNING="$(
-  docker inspect \
-    --format '{{.State.Running}}' \
     "${CONTAINER_NAME}"
 )"
 
@@ -685,38 +851,51 @@ CONTAINER_STATUS="$(
 )"
 
 
+CONTAINER_RUNNING="$(
+  docker inspect \
+    --format '{{.State.Running}}' \
+    "${CONTAINER_NAME}"
+)"
+
+
 log "Container PID : ${CONTAINER_PID}"
-log "Running       : ${CONTAINER_RUNNING}"
+
 log "Status        : ${CONTAINER_STATUS}"
+
+log "Running       : ${CONTAINER_RUNNING}"
 
 
 if [[ "${CONTAINER_RUNNING}" != "true" ]]; then
 
   show_container_logs
 
-  die "MT5 container is not running."
+  die "MT5 container failed to start."
 
 fi
 
 
 # ============================================================
-# Generic TCP Wait Function
+# TCP Health Check
 # ============================================================
 
 wait_for_tcp() {
 
   local host="$1"
+
   local port="$2"
+
   local timeout="$3"
+
   local description="$4"
 
-  local started
-  local now
+  local start_time
+
+  local current_time
+
   local elapsed
-  local attempt=0
 
 
-  started="$(date +%s)"
+  start_time="$(date +%s)"
 
 
   log "Waiting for ${description} at ${host}:${port}..."
@@ -724,15 +903,14 @@ wait_for_tcp() {
 
   while true; do
 
-    attempt=$((attempt + 1))
-
 
     if nc \
       -z \
       -w 2 \
       "${host}" \
       "${port}" \
-      >/dev/null 2>&1; then
+      >/dev/null \
+      2>&1; then
 
       log "✅ ${description} TCP port is ready."
 
@@ -744,6 +922,7 @@ wait_for_tcp() {
     if ! container_running; then
 
       echo
+
       echo "❌ Container stopped while waiting for ${description}."
 
       show_container_logs
@@ -753,15 +932,16 @@ wait_for_tcp() {
     fi
 
 
-    now="$(date +%s)"
+    current_time="$(date +%s)"
 
-    elapsed=$((now - started))
+    elapsed=$((current_time - start_time))
 
 
     if (( elapsed >= timeout )); then
 
       echo
-      echo "❌ Timeout waiting for ${description} TCP port."
+
+      echo "❌ TCP timeout for ${description}."
 
       show_container_logs
 
@@ -770,7 +950,7 @@ wait_for_tcp() {
     fi
 
 
-    log "Waiting for ${description}... attempt=${attempt}, elapsed=${elapsed}s/${timeout}s"
+    log "⏳ ${description} not ready yet: ${elapsed}s/${timeout}s"
 
 
     sleep "${HEALTH_INTERVAL_SECONDS}"
@@ -781,7 +961,7 @@ wait_for_tcp() {
 
 
 # ============================================================
-# Wait for KasmVNC TCP
+# KasmVNC TCP
 # ============================================================
 
 section "⏳ TCP readiness — KasmVNC :3000"
@@ -795,7 +975,7 @@ wait_for_tcp \
 
 
 # ============================================================
-# Wait for RPyC TCP
+# mt5linux TCP
 # ============================================================
 
 section "⏳ TCP readiness — mt5linux/RPyC :8001"
@@ -809,22 +989,24 @@ wait_for_tcp \
 
 
 # ============================================================
-# HTTP Health Check
+# HTTP Probe
 # ============================================================
 
-check_http_once() {
+http_probe() {
 
   local url="$1"
-  local response_file="$2"
+
+  local error_file="$2"
+
+  local code=""
+
+  local rc=0
 
 
-  : > "${response_file}"
+  : > "${error_file}"
 
 
-  local http_code
-
-
-  http_code="$(
+  if code="$(
     curl \
       --silent \
       --show-error \
@@ -833,69 +1015,112 @@ check_http_once() {
       --connect-timeout 5 \
       --max-time 15 \
       "${url}" \
-      2>"${response_file}"
-  )"
+      2>"${error_file}"
+  )"; then
 
-  local curl_exit=$?
+    rc=0
+
+  else
+
+    rc=$?
+
+  fi
 
 
-  if (( curl_exit != 0 )); then
+  if (( rc != 0 )); then
 
-    # curl commonly returns 000 when no HTTP response exists.
-    # This is a transport failure, not a real HTTP status.
+    echo "curl_exit=${rc}"
 
-    echo "curl_exit=${curl_exit}"
-    echo "http_code=${http_code:-000}"
+    echo "http_code=${code:-000}"
 
-    if [[ -s "${response_file}" ]]; then
+
+    if [[ -s "${error_file}" ]]; then
+
       echo "curl_error:"
-      cat "${response_file}"
+
+      cat "${error_file}"
+
     fi
+
 
     return 1
 
   fi
 
 
-  echo "http_code=${http_code}"
+  echo "http_code=${code}"
 
 
-  case "${http_code}" in
+  # KasmVNC may return:
+  #
+  # 200 = success
+  # 3xx = redirect
+  # 401 = authentication required
+  # 403 = forbidden/auth layer
+  #
+  # All of these prove the HTTP service is alive.
 
-    2??|3??|401|403)
 
-      return 0
-      ;;
+  if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
 
-    *)
+    return 0
 
-      return 1
-      ;;
+  fi
 
-  esac
+
+  if [[ "${code}" =~ ^3[0-9][0-9]$ ]]; then
+
+    return 0
+
+  fi
+
+
+  if [[ "${code}" == "401" ]]; then
+
+    return 0
+
+  fi
+
+
+  if [[ "${code}" == "403" ]]; then
+
+    return 0
+
+  fi
+
+
+  return 1
 
 }
 
 
+# ============================================================
+# HTTP Readiness
+# ============================================================
+
 wait_for_http() {
 
   local url="$1"
+
   local timeout="$2"
+
   local description="$3"
 
+  local error_file="${LOG_DIR}/http-health-error.txt"
 
-  local started
-  local now
+  local start_time
+
+  local current_time
+
   local elapsed
+
   local attempt=0
 
-  local response_file="${LOG_DIR}/http-health-error.txt"
+
+  start_time="$(date +%s)"
 
 
-  started="$(date +%s)"
-
-
-  log "Waiting for ${description} HTTP readiness..."
+  log "Waiting for ${description} HTTP service..."
 
   log "URL: ${url}"
 
@@ -905,9 +1130,22 @@ wait_for_http() {
     attempt=$((attempt + 1))
 
 
-    if check_http_once \
+    # --------------------------------------------------------
+    # IMPORTANT
+    #
+    # Do NOT call:
+    #
+    #   http_probe ...
+    #
+    # directly under `set -e`.
+    #
+    # The if statement intentionally absorbs exit code 1
+    # while the service is still starting.
+    # --------------------------------------------------------
+
+    if http_probe \
       "${url}" \
-      "${response_file}"; then
+      "${error_file}"; then
 
       log "✅ ${description} HTTP service is ready."
 
@@ -919,7 +1157,8 @@ wait_for_http() {
     if ! container_running; then
 
       echo
-      echo "❌ Container stopped during HTTP readiness check."
+
+      echo "❌ Container stopped during HTTP readiness."
 
       show_container_logs
 
@@ -928,23 +1167,39 @@ wait_for_http() {
     fi
 
 
-    now="$(date +%s)"
+    current_time="$(date +%s)"
 
-    elapsed=$((now - started))
+    elapsed=$((current_time - start_time))
 
 
     if (( elapsed >= timeout )); then
 
       echo
-      echo "❌ HTTP readiness timeout for ${description}."
+
+      echo "❌ HTTP readiness timeout."
+
+      echo "Description : ${description}"
+
+      echo "URL         : ${url}"
+
+      echo "Attempts    : ${attempt}"
+
+      echo "Elapsed     : ${elapsed}s"
+
 
       echo
-      echo "Last curl diagnostic:"
 
-      if [[ -s "${response_file}" ]]; then
-        cat "${response_file}"
+      echo "Last curl diagnostics:"
+
+
+      if [[ -s "${error_file}" ]]; then
+
+        cat "${error_file}"
+
       else
-        echo "No curl diagnostic available."
+
+        echo "No curl error."
+
       fi
 
 
@@ -955,7 +1210,17 @@ wait_for_http() {
     fi
 
 
-    log "HTTP not ready yet... attempt=${attempt}, elapsed=${elapsed}s/${timeout}s"
+    log "⏳ HTTP not ready: attempt=${attempt}, elapsed=${elapsed}s/${timeout}s"
+
+
+    if [[ -s "${error_file}" ]]; then
+
+      tail -n 2 \
+        "${error_file}" \
+        2>/dev/null \
+        || true
+
+    fi
 
 
     sleep "${HEALTH_INTERVAL_SECONDS}"
@@ -966,7 +1231,7 @@ wait_for_http() {
 
 
 # ============================================================
-# KasmVNC HTTP Health
+# KasmVNC HTTP
 # ============================================================
 
 section "❤️ HTTP readiness — KasmVNC"
@@ -979,7 +1244,7 @@ wait_for_http \
 
 
 # ============================================================
-# Optional HTTP Header Diagnostics
+# KasmVNC Header Diagnostics
 # ============================================================
 
 section "🔬 KasmVNC HTTP diagnostics"
@@ -1006,18 +1271,15 @@ start_cloudflare() {
   section "☁️ Start Cloudflare Quick Tunnel"
 
 
-  rm -f \
-    "${CLOUDFLARE_LOG}" \
-    "${TUNNEL_URL_FILE}"
-
+  rm -f "${CLOUDFLARE_LOG}"
 
   touch "${CLOUDFLARE_LOG}"
 
 
-  log "Starting Cloudflare tunnel..."
+  log "Starting Cloudflare..."
 
 
-  nohup cloudflared tunnel \
+  cloudflared tunnel \
     --no-autoupdate \
     --url "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}" \
     > "${CLOUDFLARE_LOG}" \
@@ -1030,20 +1292,19 @@ start_cloudflare() {
   log "cloudflared PID: ${CLOUDFLARED_PID}"
 
 
-  local started
-  local now
+  local start_time
+
+  local current_time
+
   local elapsed
-  local attempt=0
 
   local tunnel_url=""
 
 
-  started="$(date +%s)"
+  start_time="$(date +%s)"
 
 
   while true; do
-
-    attempt=$((attempt + 1))
 
 
     if ! kill -0 \
@@ -1051,11 +1312,16 @@ start_cloudflare() {
       2>/dev/null; then
 
       echo
+
       echo "❌ cloudflared stopped unexpectedly."
 
-      cat "${CLOUDFLARE_LOG}" || true
+      echo
 
-      die "Cloudflare tunnel failed to start."
+      cat "${CLOUDFLARE_LOG}" \
+        2>/dev/null \
+        || true
+
+      return 1
 
     fi
 
@@ -1068,7 +1334,7 @@ start_cloudflare() {
         2>/dev/null \
         | head -n 1 \
         || true
-    )
+    )"
 
 
     if [[ -n "${tunnel_url}" ]]; then
@@ -1078,37 +1344,45 @@ start_cloudflare() {
         > "${TUNNEL_URL_FILE}"
 
 
-      log "🌐 Cloudflare public URL detected:"
+      log "🌐 Cloudflare URL:"
+
       echo
-      echo "    ${tunnel_url}"
+
+      echo "${tunnel_url}"
+
       echo
+
 
       break
 
     fi
 
 
-    now="$(date +%s)"
+    current_time="$(date +%s)"
 
-    elapsed=$((now - started))
+    elapsed=$((current_time - start_time))
 
 
     if (( elapsed >= TUNNEL_TIMEOUT_SECONDS )); then
 
       echo
-      echo "❌ Cloudflare URL detection timed out."
+
+      echo "❌ Cloudflare URL detection timeout."
 
       echo
+
       echo "Cloudflare log:"
 
-      cat "${CLOUDFLARE_LOG}" || true
+      cat "${CLOUDFLARE_LOG}" \
+        2>/dev/null \
+        || true
 
-      die "Unable to obtain Cloudflare tunnel URL."
+      return 1
 
     fi
 
 
-    log "Waiting for Cloudflare URL... attempt=${attempt}, elapsed=${elapsed}s/${TUNNEL_TIMEOUT_SECONDS}s"
+    log "⏳ Waiting for Cloudflare URL: ${elapsed}s/${TUNNEL_TIMEOUT_SECONDS}s"
 
 
     sleep 2
@@ -1117,25 +1391,27 @@ start_cloudflare() {
 
 
   # ----------------------------------------------------------
-  # Public connectivity
+  # Public health
   # ----------------------------------------------------------
 
-  section "🌍 Cloudflare public HTTP health"
+  section "🌍 Public Cloudflare health"
 
 
-  local public_started
+  local public_start
+
   local public_now
+
   local public_elapsed
-  local public_attempt=0
+
   local public_code
 
+  local public_rc
 
-  public_started="$(date +%s)"
+
+  public_start="$(date +%s)"
 
 
   while true; do
-
-    public_attempt=$((public_attempt + 1))
 
 
     public_code="$(
@@ -1150,48 +1426,72 @@ start_cloudflare() {
         2>/dev/null
     )"
 
-    local curl_exit=$?
+    public_rc=$?
 
 
-    if (( curl_exit == 0 )); then
+    if (( public_rc == 0 )); then
 
       log "Public HTTP status: ${public_code}"
 
 
-      case "${public_code}" in
+      if [[ "${public_code}" =~ ^2[0-9][0-9]$ ]]; then
 
-        2??|3??|401|403)
+        log "✅ Cloudflare public endpoint is reachable."
 
-          log "✅ Public Cloudflare tunnel is reachable."
+        break
 
-          break
-          ;;
+      fi
 
-        *)
 
-          log "⚠️ Public tunnel responded with HTTP ${public_code}."
+      if [[ "${public_code}" =~ ^3[0-9][0-9]$ ]]; then
 
-          ;;
+        log "✅ Cloudflare public endpoint is reachable."
 
-      esac
+        break
+
+      fi
+
+
+      if [[ "${public_code}" == "401" ]]; then
+
+        log "✅ Cloudflare endpoint reached KasmVNC authentication."
+
+        break
+
+      fi
+
+
+      if [[ "${public_code}" == "403" ]]; then
+
+        log "✅ Cloudflare endpoint reached the server."
+
+        break
+
+      fi
 
     else
 
-      log "⚠️ Public HTTP connection failed. curl exit=${curl_exit}"
+      log "⏳ Public HTTP connection failed. curl=${public_rc}"
 
     fi
 
 
     public_now="$(date +%s)"
 
-    public_elapsed=$((public_now - public_started))
+    public_elapsed=$((public_now - public_start))
 
 
     if (( public_elapsed >= TUNNEL_TIMEOUT_SECONDS )); then
 
-      log "⚠️ Public HTTP check timed out."
+      echo
 
-      log "The Cloudflare tunnel URL exists, but public connectivity could not be confirmed."
+      echo "⚠️ Cloudflare URL exists but public health check timed out."
+
+      echo "URL: ${tunnel_url}"
+
+      echo
+
+      echo "Continuing because the tunnel process is alive."
 
       break
 
@@ -1205,7 +1505,7 @@ start_cloudflare() {
 }
 
 
-if is_true "${ENABLE_TUNNEL}"; then
+if [[ "${ENABLE_TUNNEL,,}" == "true" ]]; then
 
   start_cloudflare
 
@@ -1220,12 +1520,19 @@ section "🔗 CONNECTION INFORMATION"
 
 
 echo
+
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║                 🚀 MT5 CLOUD DESKTOP                       ║"
+
+echo "║                  🚀 MT5 CLOUD DESKTOP                      ║"
+
 echo "╠════════════════════════════════════════════════════════════╣"
+
 echo "║                                                            ║"
-echo "║ User:     ${MT5_WEB_USER}"
-echo "║ Password: ${MT5_WEB_PASSWORD}"
+
+echo "║ Username : ${MT5_WEB_USER}"
+
+echo "║ Password : ${MT5_WEB_PASSWORD}"
+
 echo "║                                                            ║"
 
 
@@ -1233,20 +1540,23 @@ if [[ -s "${TUNNEL_URL_FILE}" ]]; then
 
   TUNNEL_URL="$(cat "${TUNNEL_URL_FILE}")"
 
-  echo "║ Browser:  ${TUNNEL_URL}"
-  echo "║                                                            ║"
+  echo "║ Browser  : ${TUNNEL_URL}"
 
 else
 
-  echo "║ Browser:  http://${MT5_WEB_BIND}:${MT5_WEB_PORT}"
-  echo "║                                                            ║"
+  echo "║ Browser  : http://${MT5_WEB_BIND}:${MT5_WEB_PORT}"
 
 fi
 
 
-echo "║ RPyC:     ${MT5_API_BIND}:${MT5_API_PORT}"
 echo "║                                                            ║"
+
+echo "║ RPyC     : ${MT5_API_BIND}:${MT5_API_PORT}"
+
+echo "║                                                            ║"
+
 echo "╚════════════════════════════════════════════════════════════╝"
+
 echo
 
 
@@ -1256,117 +1566,128 @@ echo
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 
-  cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
 
-# 🚀 MT5 Cloud Desktop
+  {
 
-| Setting | Value |
-|---|---|
-| Resolution | \`${RESOLUTION}\` |
-| Session | \`${SESSION_MINUTES} minutes\` |
-| Docker Image | \`${MT5_IMAGE}\` |
-| Container | \`${CONTAINER_NAME}\` |
-| Web Port | \`${MT5_WEB_PORT}\` |
-| RPyC Port | \`${MT5_API_PORT}\` |
-| Cloudflare | \`${ENABLE_TUNNEL}\` |
+    echo "# 🚀 MT5 Cloud Desktop"
 
-## 🔗 Connection
+    echo
 
-EOF
+    echo "| Setting | Value |"
 
+    echo "|---|---|"
 
-  if [[ -s "${TUNNEL_URL_FILE}" ]]; then
+    echo "| Resolution | \`${RESOLUTION}\` |"
 
-    TUNNEL_URL="$(cat "${TUNNEL_URL_FILE}")"
+    echo "| Session | \`${SESSION_MINUTES} minutes\` |"
 
+    echo "| Docker Image | \`${MT5_IMAGE}\` |"
 
-    cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
-### 🌐 Browser
+    echo "| Container | \`${CONTAINER_NAME}\` |"
 
-\`${TUNNEL_URL}\`
+    echo "| KasmVNC | \`${MT5_WEB_BIND}:${MT5_WEB_PORT}\` |"
 
-### 👤 Username
+    echo "| mt5linux/RPyC | \`${MT5_API_BIND}:${MT5_API_PORT}\` |"
 
-\`${MT5_WEB_USER}\`
+    echo "| Cloudflare | \`${ENABLE_TUNNEL}\` |"
 
-### 🔑 Password
+    echo
 
-\`${MT5_WEB_PASSWORD}\`
+    echo "## 🔗 Connection"
 
-EOF
-
-  else
-
-    cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
-Cloudflare Tunnel is disabled.
-
-Local web endpoint:
-
-\`http://${MT5_WEB_BIND}:${MT5_WEB_PORT}\`
-
-EOF
-
-  fi
+    echo
 
 
-  cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
+    if [[ -s "${TUNNEL_URL_FILE}" ]]; then
 
-## 🔌 Python / mt5linux
+      TUNNEL_URL="$(cat "${TUNNEL_URL_FILE}")"
 
-Private RPyC endpoint:
+      echo "**Browser:**"
 
-\`${MT5_API_BIND}:${MT5_API_PORT}\`
+      echo
 
-## 🐳 Docker
+      echo "${TUNNEL_URL}"
 
-Image is pulled directly from the upstream registry.
+      echo
 
-No Docker build is performed.
+      echo "**Username:** \`${MT5_WEB_USER}\`"
 
-No GitHub Actions cache is used.
+      echo
 
-## ❤️ Health
+      echo "**Password:** \`${MT5_WEB_PASSWORD}\`"
 
-- Docker container: **RUNNING**
-- KasmVNC TCP: **READY**
-- mt5linux/RPyC TCP: **READY**
-- KasmVNC HTTP: **READY**
-- Cloudflare: **${ENABLE_TUNNEL}**
+    else
 
-EOF
+      echo "Cloudflare Tunnel is disabled."
+
+    fi
+
+
+    echo
+
+    echo "## ❤️ Health"
+
+    echo
+
+    echo "- Docker container: **READY**"
+
+    echo "- KasmVNC TCP :3000: **READY**"
+
+    echo "- mt5linux/RPyC TCP :8001: **READY**"
+
+    echo "- KasmVNC HTTP: **READY**"
+
+    echo
+
+    echo "## 🔐 Network"
+
+    echo
+
+    echo "Only KasmVNC :3000 is exposed through Cloudflare."
+
+    echo
+
+    echo "mt5linux/RPyC :8001 remains bound to localhost."
+
+  } >> "${GITHUB_STEP_SUMMARY}"
 
 fi
 
 
 # ============================================================
-# Session Monitor
+# Session Timer
 # ============================================================
 
-section "⏱️ Monitor MT5 Session"
+section "⏱️ MT5 SESSION"
 
 
 SESSION_SECONDS=$((SESSION_MINUTES * 60))
+
 
 START_TIME_UNIX="$(date +%s)"
 
 END_TIME_UNIX=$((START_TIME_UNIX + SESSION_SECONDS))
 
 
-log "Session started : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+log "Session started: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
-log "Duration        : ${SESSION_MINUTES} minutes"
+log "Duration       : ${SESSION_MINUTES} minutes"
 
-log "End time        : $(date -u -d "@${END_TIME_UNIX}" '+%Y-%m-%d %H:%M:%S UTC')"
+log "End time       : $(date -u -d "@${END_TIME_UNIX}" '+%Y-%m-%d %H:%M:%S UTC')"
 
+
+# ============================================================
+# Monitor
+# ============================================================
 
 while true; do
+
 
   NOW_UNIX="$(date +%s)"
 
 
   if (( NOW_UNIX >= END_TIME_UNIX )); then
 
-    echo
     log "⏰ Session duration reached."
 
     break
@@ -1375,12 +1696,13 @@ while true; do
 
 
   # ----------------------------------------------------------
-  # Container health
+  # Container must remain alive
   # ----------------------------------------------------------
 
   if ! container_running; then
 
     echo
+
     echo "❌ MT5 container stopped unexpectedly."
 
     show_container_logs
@@ -1401,39 +1723,19 @@ while true; do
   REMAINING_ONLY_SECONDS=$((REMAINING_SECONDS % 60))
 
 
-  CONTAINER_STARTED="$(
-    docker inspect \
-      --format '{{.State.StartedAt}}' \
-      "${CONTAINER_NAME}" \
-      2>/dev/null \
-      || echo "unknown"
-  )"
-
-
   echo
+
   echo "------------------------------------------------------------"
-  echo "[$(timestamp)]"
+
+  echo "[$(timestamp)] MT5 SESSION"
+
+  echo "------------------------------------------------------------"
+
   echo "Container : RUNNING"
+
   echo "Remaining : ${REMAINING_MINUTES}m ${REMAINING_ONLY_SECONDS}s"
-  echo "Started   : ${CONTAINER_STARTED}"
+
   echo "------------------------------------------------------------"
-
-
-  # ----------------------------------------------------------
-  # Resource snapshot
-  # ----------------------------------------------------------
-
-  if (( REMAINING_SECONDS % 60 < 30 )); then
-
-    docker stats \
-      --no-stream \
-      --format \
-      'CPU={{.CPUPerc}} | MEM={{.MemUsage}} ({{.MemPerc}}) | NET={{.NetIO}} | BLOCK={{.BlockIO}}' \
-      "${CONTAINER_NAME}" \
-      2>/dev/null \
-      || true
-
-  fi
 
 
   sleep 30
@@ -1445,21 +1747,23 @@ done
 # Final Diagnostics
 # ============================================================
 
-section "📊 Final MT5 diagnostics"
+section "📊 Final diagnostics"
 
 
-echo
-echo "Container:"
+echo "Container state:"
+
 docker inspect \
   --format \
-  'Name={{.Name}} | Status={{.State.Status}} | Running={{.State.Running}} | Started={{.State.StartedAt}}' \
+  'Running={{.State.Running}} | Status={{.State.Status}} | ExitCode={{.State.ExitCode}} | Started={{.State.StartedAt}}' \
   "${CONTAINER_NAME}" \
   2>/dev/null \
   || true
 
 
 echo
+
 echo "Docker stats:"
+
 docker stats \
   --no-stream \
   --format \
@@ -1470,15 +1774,20 @@ docker stats \
 
 
 echo
+
 echo "Listening ports:"
+
 ss -lntp \
   2>/dev/null \
-  | grep -E ":(${MT5_WEB_PORT}|${MT5_API_PORT})" \
+  | grep \
+    -E ":(${MT5_WEB_PORT}|${MT5_API_PORT})" \
   || true
 
 
 echo
-echo "MT5 container processes:"
+
+echo "Container processes:"
+
 docker top \
   "${CONTAINER_NAME}" \
   2>/dev/null \
@@ -1489,52 +1798,81 @@ docker top \
 # Save Diagnostics
 # ============================================================
 
-if is_true "${SAVE_ARTIFACTS}"; then
+if [[ "${SAVE_ARTIFACTS,,}" == "true" ]]; then
 
-  section "📦 Prepare diagnostics"
+
+  section "📦 Save diagnostics"
 
 
   {
+
     echo "MT5 Cloud Desktop Diagnostics"
+
     echo "=============================="
+
     echo
+
     echo "Timestamp: $(timestamp)"
-    echo "Run ID: ${GITHUB_RUN_ID:-local}"
+
+    echo "GitHub Run ID: ${GITHUB_RUN_ID:-local}"
+
     echo "Image: ${MT5_IMAGE}"
+
     echo "Container: ${CONTAINER_NAME}"
+
     echo "Resolution: ${RESOLUTION}"
-    echo "Session minutes: ${SESSION_MINUTES}"
+
+    echo "Session: ${SESSION_MINUTES} minutes"
+
     echo
-    echo "Health configuration:"
-    echo "TCP timeout: ${TCP_TIMEOUT_SECONDS}s"
-    echo "HTTP timeout: ${HTTP_TIMEOUT_SECONDS}s"
-    echo "Tunnel timeout: ${TUNNEL_TIMEOUT_SECONDS}s"
-    echo "Health interval: ${HEALTH_INTERVAL_SECONDS}s"
-    echo
-    echo "Docker:"
-    docker --version
-    echo
+
     echo "Architecture:"
+
     uname -m
+
     echo
-    echo "Disk:"
-    df -h /
+
+    echo "Kernel:"
+
+    uname -a
+
     echo
+
+    echo "Docker:"
+
+    docker --version
+
+    echo
+
     echo "Memory:"
+
     free -h
+
     echo
+
+    echo "Disk:"
+
+    df -h /
+
+    echo
+
     echo "Container inspect:"
+
     docker inspect \
       "${CONTAINER_NAME}" \
       2>&1 \
       || true
+
     echo
+
     echo "Container logs:"
+
     docker logs \
       --tail 1000 \
       "${CONTAINER_NAME}" \
       2>&1 \
       || true
+
   } > "${LOG_DIR}/diagnostics.txt"
 
 
@@ -1556,38 +1894,42 @@ if is_true "${SAVE_ARTIFACTS}"; then
   fi
 
 
-  log "Diagnostics saved to:"
-  log "${LOG_DIR}"
+  log "✅ Diagnostics saved."
 
 fi
 
 
 # ============================================================
-# Successful Completion
+# Success
 # ============================================================
 
 section "✅ MT5 SESSION COMPLETED"
 
 
-echo
 echo "MetaTrader 5 session completed normally."
+
 echo
-echo "Duration   : ${SESSION_MINUTES} minutes"
+
 echo "Resolution : ${RESOLUTION}"
+
+echo "Duration   : ${SESSION_MINUTES} minutes"
 
 
 if [[ -s "${TUNNEL_URL_FILE}" ]]; then
 
   echo
+
   echo "🌐 Browser URL:"
+
   cat "${TUNNEL_URL_FILE}"
 
 fi
 
 
 echo
-echo "The cleanup handler will now stop:"
-echo "  • Cloudflare Tunnel"
-echo "  • MT5 Docker container"
+
+echo "Cleanup will now stop the temporary session."
+
 echo
-echo "✅ Runtime finished successfully."
+
+echo "✅ Done."
