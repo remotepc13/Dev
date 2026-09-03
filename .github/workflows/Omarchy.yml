@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       resolution:
-        description: "🖥️ Desktop resolution"
+        name: 🖥️ Desktop Resolution
+        description: "Screen resolution for MetaTrader 5"
         required: true
         type: choice
         default: "1920x1080"
@@ -14,7 +15,8 @@ on:
           - "1280x720"
 
       session_minutes:
-        description: "⏱️ Session lifetime (minutes)"
+        name: ⏱️ Session Duration
+        description: "How long the MT5 session should stay alive"
         required: true
         type: choice
         default: "60"
@@ -26,32 +28,36 @@ on:
           - "180"
           - "300"
 
-      clean_default_account:
-        description: "🧹 Clean default MT5 account"
-        required: true
-        type: boolean
-        default: true
-
-      enable_tunnel:
-        description: "🌐 Enable browser access via TryCloudflare"
-        required: true
-        type: boolean
-        default: true
-
-      keep_artifacts:
-        description: "📦 Save MT5 files/logs as artifact"
-        required: true
-        type: boolean
-        default: true
-
-      image:
-        description: "🐳 MT5 Docker image"
+      mt5_image:
+        name: 🐳 MT5 Docker Image
+        description: "Docker image to run"
         required: true
         type: string
-        default: "ghcr.io/OWNER/mt5-docker:latest"
+        default: "gmag11/metatrader5_vnc"
+
+      enable_tunnel:
+        name: 🌐 Browser Access
+        description: "Expose MT5 web interface through TryCloudflare"
+        required: true
+        type: boolean
+        default: true
+
+      save_artifacts:
+        name: 📦 Save Artifacts
+        description: "Save MT5 configuration and diagnostics"
+        required: true
+        type: boolean
+        default: true
+
+      clean_account:
+        name: 🧹 Clean Default Account
+        description: "Remove/sanitize default account data when supported by image"
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
-  group: mt5-cloud-${{ github.ref }}
+  group: mt5-cloud
   cancel-in-progress: true
 
 permissions:
@@ -59,22 +65,27 @@ permissions:
 
 env:
   CONTAINER_NAME: mt5-cloud
-  MT5_PORT: "3000"
-  MT5_HOST: "127.0.0.1"
+  MT5_WEB_PORT: "3000"
+  MT5_API_PORT: "8001"
+  MT5_WEB_BIND: "127.0.0.1"
+  MT5_API_BIND: "127.0.0.1"
   TZ: "UTC"
 
 jobs:
-  run-mt5:
-    name: 🖥️ Start MetaTrader 5 Cloud Desktop
+  mt5:
+    name: 🖥️ MetaTrader 5 Cloud Session
     runs-on: ubuntu-24.04
 
-    timeout-minutes: 310
+    # Maximum selected session = 300 min.
+    # Extra time is reserved for startup/cleanup.
+    timeout-minutes: 360
 
     steps:
+
       # ============================================================
-      # 1. Runner diagnostics
+      # 1. Runner information
       # ============================================================
-      - name: 🔍 Runner diagnostics
+      - name: 🔍 Runner Diagnostics
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -83,21 +94,31 @@ jobs:
           echo "🖥️ RUNNER INFORMATION"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          echo "OS         : $(. /etc/os-release && echo "$PRETTY_NAME")"
-          echo "Kernel     : $(uname -r)"
-          echo "Architecture: $(uname -m)"
-          echo "CPU        : $(nproc)"
-          echo "Memory     : $(free -h | awk '/^Mem:/ {print $2}')"
-          echo "Disk       : $(df -h / | awk 'NR==2 {print $4 " free / " $2}')"
+          OS_NAME="$(
+            . /etc/os-release
+            printf '%s' "$PRETTY_NAME"
+          )"
 
+          echo "OS           : ${OS_NAME}"
+          echo "Kernel       : $(uname -r)"
+          echo "Architecture : $(uname -m)"
+          echo "CPU Cores    : $(nproc)"
+          echo "Memory       : $(free -h | awk '/^Mem:/ {print $2}')"
+          echo "Disk         : $(df -h / | awk 'NR==2 {print $4 " free / " $2}')"
+          echo "Docker       : $(docker --version)"
           echo
-          echo "Docker:"
-          docker --version
+
+          if [[ "$(uname -m)" != "x86_64" ]]; then
+            echo "❌ This MT5 image requires amd64/x86_64."
+            exit 1
+          fi
+
+          echo "✅ Runner architecture is compatible."
 
       # ============================================================
-      # 2. Install dependencies
+      # 2. Install required packages
       # ============================================================
-      - name: 🧰 Install dependencies
+      - name: 🧰 Install Dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -106,13 +127,15 @@ jobs:
 
           sudo apt-get install -y --no-install-recommends \
             curl \
-            jq \
-            ca-certificates
+            ca-certificates \
+            jq
+
+          echo "✅ Dependencies installed."
 
       # ============================================================
-      # 3. Install cloudflared
+      # 3. Install Cloudflare Tunnel
       # ============================================================
-      - name: ☁️ Install Cloudflare Tunnel
+      - name: ☁️ Install Cloudflared
         if: ${{ inputs.enable_tunnel }}
         shell: bash
         run: |
@@ -124,21 +147,45 @@ jobs:
             exit 0
           fi
 
-          curl -fsSL \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-            -o /tmp/cloudflared.deb
+          ARCH="$(dpkg --print-architecture)"
+
+          case "$ARCH" in
+            amd64)
+              CLOUDFLARED_PACKAGE="cloudflared-linux-amd64.deb"
+              ;;
+            arm64)
+              CLOUDFLARED_PACKAGE="cloudflared-linux-arm64.deb"
+              ;;
+            *)
+              echo "❌ Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          DOWNLOAD_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/${CLOUDFLARED_PACKAGE}"
+
+          echo "Downloading cloudflared:"
+          echo "$DOWNLOAD_URL"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            "$DOWNLOAD_URL" \
+            --output /tmp/cloudflared.deb
 
           sudo dpkg -i /tmp/cloudflared.deb
-
           rm -f /tmp/cloudflared.deb
 
-          echo "✅ cloudflared installed."
+          echo
+          echo "✅ Cloudflared installed:"
           cloudflared --version
 
       # ============================================================
-      # 4. Prepare directories
+      # 4. Prepare workspace
       # ============================================================
-      - name: 📁 Prepare MT5 workspace
+      - name: 📁 Prepare Workspace
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -148,69 +195,95 @@ jobs:
             "$GITHUB_WORKSPACE/logs" \
             "$GITHUB_WORKSPACE/tunnel"
 
+          chmod 755 \
+            "$GITHUB_WORKSPACE/mt5_data" \
+            "$GITHUB_WORKSPACE/logs" \
+            "$GITHUB_WORKSPACE/tunnel"
+
           echo "✅ Workspace prepared."
 
       # ============================================================
       # 5. Session configuration
       # ============================================================
-      - name: ⚙️ Show session configuration
+      - name: ⚙️ Show Configuration
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo
           echo "╔════════════════════════════════════════════════════════════╗"
-          echo "║                ⚙️  MT5 SESSION CONFIG                     ║"
+          echo "║                 ⚙️ MT5 SESSION CONFIG                     ║"
           echo "╠════════════════════════════════════════════════════════════╣"
           echo "║                                                            ║"
-          printf "║  🐳 Image       : %-39s ║\n" "${{ inputs.image }}"
-          printf "║  🖥️ Resolution  : %-39s ║\n" "${{ inputs.resolution }}"
-          printf "║  ⏱️ Duration    : %-39s ║\n" "${{ inputs.session_minutes }} minutes"
-          printf "║  🧹 Clean acct  : %-39s ║\n" "${{ inputs.clean_default_account }}"
-          printf "║  🌐 Web access  : %-39s ║\n" "${{ inputs.enable_tunnel }}"
-          printf "║  📦 Artifacts   : %-39s ║\n" "${{ inputs.keep_artifacts }}"
+          printf "║  🐳 Image        : %-37s ║\n" "${{ inputs.mt5_image }}"
+          printf "║  🖥️ Resolution   : %-37s ║\n" "${{ inputs.resolution }}"
+          printf "║  ⏱️ Duration     : %-37s ║\n" "${{ inputs.session_minutes }} min"
+          printf "║  🌐 Browser      : %-37s ║\n" "${{ inputs.enable_tunnel }}"
+          printf "║  📦 Artifacts    : %-37s ║\n" "${{ inputs.save_artifacts }}"
+          printf "║  🧹 Clean acct   : %-37s ║\n" "${{ inputs.clean_account }}"
           echo "║                                                            ║"
           echo "╚════════════════════════════════════════════════════════════╝"
           echo
 
       # ============================================================
-      # 6. Pull MT5 image
+      # 6. Pull image
       # ============================================================
-      - name: 🐳 Pull MT5 image
+      - name: 🐳 Pull MT5 Image
         shell: bash
         env:
-          MT5_IMAGE: ${{ inputs.image }}
+          MT5_IMAGE: ${{ inputs.mt5_image }}
         run: |
           set -Eeuo pipefail
 
-          echo "📦 Pulling MT5 image..."
-          echo "   $MT5_IMAGE"
+          echo "📦 Pulling image:"
+          echo "   ${MT5_IMAGE}"
+          echo
 
-          docker pull "$MT5_IMAGE"
+          docker pull "${MT5_IMAGE}"
 
           echo
-          echo "✅ Image ready."
+          echo "✅ Image successfully pulled."
 
-          docker image inspect "$MT5_IMAGE" \
-            --format='Image={{.RepoTags}} | ID={{.Id}} | Size={{.Size}}'
+          docker image inspect "${MT5_IMAGE}" \
+            --format='Repository: {{.RepoTags}} | ID: {{.Id}} | Size: {{.Size}} bytes'
 
       # ============================================================
-      # 7. Start MT5
+      # 7. Validate secret
+      # ============================================================
+      - name: 🔐 Validate Web Password
+        shell: bash
+        env:
+          MT5_WEB_PASSWORD: ${{ secrets.MT5_WEB_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ -z "${MT5_WEB_PASSWORD}" ]]; then
+            echo "❌ Required secret is missing:"
+            echo
+            echo "Create this repository secret:"
+            echo
+            echo "MT5_WEB_PASSWORD"
+            echo
+            echo "Example:"
+            echo "Repository → Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+
+          echo "::add-mask::${MT5_WEB_PASSWORD}"
+
+          echo "✅ MT5_WEB_PASSWORD is configured."
+
+      # ============================================================
+      # 8. Start MT5 container
       # ============================================================
       - name: ▶️ Start MetaTrader 5
         shell: bash
         env:
-          MT5_IMAGE: ${{ inputs.image }}
+          MT5_IMAGE: ${{ inputs.mt5_image }}
           MT5_RESOLUTION: ${{ inputs.resolution }}
-          MT5_CLEAN_DEFAULT: ${{ inputs.clean_default_account }}
+          MT5_WEB_PASSWORD: ${{ secrets.MT5_WEB_PASSWORD }}
         run: |
           set -Eeuo pipefail
-
-          CLEAN_VALUE="0"
-
-          if [[ "$MT5_CLEAN_DEFAULT" == "true" ]]; then
-            CLEAN_VALUE="1"
-          fi
 
           echo
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -219,58 +292,83 @@ jobs:
 
           docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
+          CLEAN_VALUE="0"
+
+          if [[ "${{ inputs.clean_account }}" == "true" ]]; then
+            CLEAN_VALUE="1"
+          fi
+
           docker run \
             --detach \
             --name "$CONTAINER_NAME" \
             --restart=no \
             --shm-size=2g \
-            --tmpfs /tmp:exec \
-            --tmpfs /run:exec \
-            --env "DISPLAY_RESOLUTION=$MT5_RESOLUTION" \
-            --env "MT5_CLEAN_DEFAULT_ACCOUNT=$CLEAN_VALUE" \
-            --env "TZ=$TZ" \
+            --env "CUSTOM_USER=trader" \
+            --env "PASSWORD=${MT5_WEB_PASSWORD}" \
+            --env "DISPLAY_RESOLUTION=${MT5_RESOLUTION}" \
+            --env "MT5_CLEAN_DEFAULT_ACCOUNT=${CLEAN_VALUE}" \
+            --env "TZ=${TZ}" \
             --volume "$GITHUB_WORKSPACE/mt5_data:/config" \
-            --publish "$MT5_HOST:$MT5_PORT:3000" \
+            --publish "$MT5_WEB_BIND:$MT5_WEB_PORT:3000" \
+            --publish "$MT5_API_BIND:$MT5_API_PORT:8001" \
             "$MT5_IMAGE"
 
           echo
           echo "✅ MT5 container started."
 
           docker ps \
-            --filter "name=$CONTAINER_NAME" \
+            --filter "name=^${CONTAINER_NAME}$" \
             --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Image}}'
 
       # ============================================================
-      # 8. Health check
+      # 9. Wait for container to start
       # ============================================================
-      - name: ❤️ MT5 health check
+      - name: ⏳ Wait for MT5 Startup
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo
-          echo "⏳ Waiting for MT5 web interface..."
+          echo "⏳ Waiting for MT5/KasmVNC..."
 
           READY="false"
 
-          for i in $(seq 1 90); do
+          for i in $(seq 1 120); do
+
             if curl \
               --silent \
               --show-error \
               --fail \
               --max-time 3 \
-              "http://$MT5_HOST:$MT5_PORT/" \
+              "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}/" \
               >/dev/null 2>&1; then
 
               READY="true"
 
               echo
               echo "✅ MT5 web interface is READY."
+              echo "   Checks: ${i}/120"
+
               break
             fi
 
+            if ! docker inspect \
+              "$CONTAINER_NAME" \
+              --format='{{.State.Running}}' \
+              2>/dev/null \
+              | grep -q true; then
+
+              echo
+              echo "❌ MT5 container stopped unexpectedly."
+              echo
+              docker logs "$CONTAINER_NAME" || true
+              exit 1
+            fi
+
             if (( i % 10 == 0 )); then
-              echo "⏳ Waiting... ($i/90)"
+              echo
+              echo "⏳ Still waiting... (${i}/120)"
+              echo "──── latest MT5 logs ────"
               docker logs --tail 20 "$CONTAINER_NAME" || true
             fi
 
@@ -279,64 +377,111 @@ jobs:
 
           if [[ "$READY" != "true" ]]; then
             echo
-            echo "❌ MT5 failed to start."
+            echo "❌ MT5 web interface did not become ready."
 
             echo
-            echo "──── Docker status ────"
-            docker ps -a --filter "name=$CONTAINER_NAME" || true
+            echo "──── Container Status ────"
+            docker ps -a --filter "name=$CONTAINER_NAME"
 
             echo
-            echo "──── MT5 logs ────"
+            echo "──── Container Logs ────"
             docker logs "$CONTAINER_NAME" || true
 
             exit 1
           fi
 
       # ============================================================
-      # 9. Start TryCloudflare
+      # 10. Verify local endpoints
       # ============================================================
-      - name: 🌐 Start browser access
+      - name: ❤️ Verify MT5 Endpoints
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "❤️ MT5 ENDPOINT CHECK"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          echo
+          echo "🌐 Web Interface:"
+          curl \
+            --silent \
+            --show-error \
+            --fail \
+            --max-time 10 \
+            "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}/" \
+            >/dev/null
+
+          echo "   ✅ :3000 reachable"
+
+          echo
+          echo "🔌 Python/RPyC port:"
+          if (echo >/dev/tcp/${MT5_API_BIND}/${MT5_API_PORT}) >/dev/null 2>&1; then
+            echo "   ✅ :8001 reachable locally"
+          else
+            echo "   ⚠️ :8001 is not responding yet"
+          fi
+
+      # ============================================================
+      # 11. Start TryCloudflare
+      # ============================================================
+      - name: 🌐 Start Browser Tunnel
         if: ${{ inputs.enable_tunnel }}
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          TUNNEL_LOG="$GITHUB_WORKSPACE/tunnel/cloudflared.log"
-          TUNNEL_PID="$GITHUB_WORKSPACE/tunnel/cloudflared.pid"
-          TUNNEL_URL="$GITHUB_WORKSPACE/tunnel/url.txt"
+          TUNNEL_DIR="$GITHUB_WORKSPACE/tunnel"
+          TUNNEL_LOG="$TUNNEL_DIR/cloudflared.log"
+          TUNNEL_PID="$TUNNEL_DIR/cloudflared.pid"
+          TUNNEL_URL="$TUNNEL_DIR/url.txt"
 
           : > "$TUNNEL_LOG"
 
-          echo "☁️ Starting TryCloudflare..."
-          echo "Target: http://$MT5_HOST:$MT5_PORT"
+          echo "☁️ Starting TryCloudflare tunnel..."
+          echo "Target:"
+          echo "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}"
+          echo
 
           nohup \
             cloudflared tunnel \
               --no-autoupdate \
-              --url "http://$MT5_HOST:$MT5_PORT" \
+              --url "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}" \
               > "$TUNNEL_LOG" 2>&1 &
 
-          PID=$!
+          PID="$!"
 
           echo "$PID" > "$TUNNEL_PID"
 
-          PUBLIC_URL=""
-
+          echo "cloudflared PID: ${PID}"
           echo
           echo "⏳ Waiting for public URL..."
 
+          PUBLIC_URL=""
+
           for i in $(seq 1 60); do
 
-            PUBLIC_URL="$(
-              grep -Eo \
-                'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-                "$TUNNEL_LOG" \
-                | head -n 1 \
-                || true
-            )"
+            if [[ -f "$TUNNEL_LOG" ]]; then
+              PUBLIC_URL="$(
+                grep -Eo \
+                  'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+                  "$TUNNEL_LOG" \
+                  | head -n 1 \
+                  || true
+              )"
+            fi
 
             if [[ -n "$PUBLIC_URL" ]]; then
               break
+            fi
+
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo
+              echo "❌ cloudflared process exited unexpectedly."
+              echo
+              cat "$TUNNEL_LOG" || true
+              exit 1
             fi
 
             sleep 2
@@ -344,75 +489,29 @@ jobs:
 
           if [[ -z "$PUBLIC_URL" ]]; then
             echo
-            echo "❌ Failed to obtain Cloudflare URL."
-
+            echo "❌ Could not obtain TryCloudflare URL."
             echo
             echo "──── cloudflared log ────"
             cat "$TUNNEL_LOG" || true
-
             exit 1
           fi
 
-          echo "$PUBLIC_URL" > "$TUNNEL_URL"
+          printf '%s\n' "$PUBLIC_URL" > "$TUNNEL_URL"
 
           echo
-          echo "✅ Public URL obtained:"
+          echo "✅ PUBLIC URL:"
+          echo
           echo "$PUBLIC_URL"
 
       # ============================================================
-      # 10. Runtime information
+      # 12. Connection information
       # ============================================================
-      - name: 📊 Runtime information
+      - name: 🔐 Display Connection Information
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📊 MT5 RUNTIME"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          echo
-          echo "Container name:"
-          docker inspect "$CONTAINER_NAME" \
-            --format='{{.Name}}'
-
-          echo
-          echo "Container image:"
-          docker inspect "$CONTAINER_NAME" \
-            --format='{{.Config.Image}}'
-
-          echo
-          echo "Container status:"
-          docker inspect "$CONTAINER_NAME" \
-            --format='{{.State.Status}}'
-
-          echo
-          echo "Started at:"
-          docker inspect "$CONTAINER_NAME" \
-            --format='{{.State.StartedAt}}'
-
-          echo
-          echo "Ports:"
-          docker port "$CONTAINER_NAME" || true
-
-          echo
-          echo "Disk:"
-          df -h /
-
-          echo
-          echo "Memory:"
-          free -h
-
-      # ============================================================
-      # 11. Connection panel
-      # ============================================================
-      - name: 🔐 Display connection information
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          PUBLIC_URL="Not enabled"
+          PUBLIC_URL="Disabled"
 
           if [[ "${{ inputs.enable_tunnel }}" == "true" ]]; then
             PUBLIC_URL="$(
@@ -423,23 +522,35 @@ jobs:
 
           echo
           echo "╔════════════════════════════════════════════════════════════╗"
-          echo "║                  🚀 MT5 CLOUD DESKTOP                     ║"
+          echo "║                                                            ║"
+          echo "║              🚀  MT5 CLOUD DESKTOP  🚀                   ║"
+          echo "║                                                            ║"
           echo "╠════════════════════════════════════════════════════════════╣"
           echo "║                                                            ║"
-          echo "║  📈 APPLICATION                                            ║"
+          echo "║  📈 Application                                            ║"
           echo "║     MetaTrader 5                                          ║"
           echo "║                                                            ║"
-          echo "║  🖥️  RESOLUTION                                            ║"
-          printf "║     %-56s║\n" "${{ inputs.resolution }}"
+          echo "║  👤 Web User                                               ║"
+          echo "║     trader                                                 ║"
           echo "║                                                            ║"
-          echo "║  ⏱️  SESSION                                               ║"
-          printf "║     %-56s║\n" "${{ inputs.session_minutes }} minutes"
+          echo "║  🖥️ Resolution                                             ║"
+          printf "║     %-57s║\n" "${{ inputs.resolution }}"
           echo "║                                                            ║"
-          echo "║  🔐 LOCAL ACCESS                                            ║"
-          echo "║     http://127.0.0.1:3000                                 ║"
+          echo "║  🔐 Local URL                                              ║"
+          echo "║     http://127.0.0.1:3000                                  ║"
           echo "║                                                            ║"
-          echo "║  🌐 BROWSER ACCESS                                          ║"
-          printf "║     %-56s║\n" "$PUBLIC_URL"
+          echo "║  🌐 Public Browser URL                                     ║"
+          printf "║     %-57s║\n" "$PUBLIC_URL"
+          echo "║                                                            ║"
+          echo "║  🔌 Python/RPyC                                            ║"
+          echo "║     127.0.0.1:8001                                        ║"
+          echo "║                                                            ║"
+          echo "║  ⏱️ Session                                                ║"
+          printf "║     %-57s║\n" "${{ inputs.session_minutes }} minutes"
+          echo "║                                                            ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║                                                            ║"
+          echo "║  🔒 Password is supplied through GitHub Actions Secret.   ║"
           echo "║                                                            ║"
           echo "╚════════════════════════════════════════════════════════════╝"
           echo
@@ -447,22 +558,41 @@ jobs:
           {
             echo "# 🚀 MT5 Cloud Desktop"
             echo
-            echo "| Property | Value |"
+            echo "## 🔐 Connection"
+            echo
+            echo "| Item | Value |"
             echo "|---|---|"
             echo "| 📈 Application | MetaTrader 5 |"
+            echo "| 👤 Username | \`trader\` |"
             echo "| 🖥️ Resolution | \`${{ inputs.resolution }}\` |"
             echo "| ⏱️ Session | \`${{ inputs.session_minutes }} minutes\` |"
-            echo "| 📦 Container | \`$CONTAINER_NAME\` |"
             echo "| 🔐 Local | \`http://127.0.0.1:3000\` |"
-            echo "| 🌐 Browser | $PUBLIC_URL |"
+            echo "| 🔌 Python/RPyC | \`127.0.0.1:8001\` |"
+
+            if [[ "$PUBLIC_URL" != "Disabled" ]]; then
+              echo "| 🌐 Browser | [Open MT5 Desktop]($PUBLIC_URL) |"
+            else
+              echo "| 🌐 Browser | Disabled |"
+            fi
+
             echo
-            echo "> ⚠️ TryCloudflare Quick Tunnel is intended for testing/development."
+            echo "## 🧭 How to connect"
+            echo
+            echo "1. Open the Browser URL above."
+            echo "2. Login with username \`trader\`."
+            echo "3. Use the repository secret \`MT5_WEB_PASSWORD\` as the password."
+            echo
+            echo "> ⚠️ TryCloudflare Quick Tunnel is intended for temporary testing/development sessions."
+            echo
+            echo "## 🔌 Python"
+            echo
+            echo "\`127.0.0.1:8001\` is intentionally not exposed through the public tunnel."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ============================================================
-      # 12. Keep session alive
+      # 13. Session monitor
       # ============================================================
-      - name: ⏳ Keep MT5 session alive
+      - name: 🟢 Monitor MT5 Session
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -472,11 +602,12 @@ jobs:
 
           echo
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🟢 MT5 SESSION ACTIVE"
+          echo "🟢 MT5 SESSION IS LIVE"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           while true; do
-            NOW=$(date +%s)
+
+            NOW="$(date +%s)"
             REMAINING=$(( END_TIME - NOW ))
 
             if (( REMAINING <= 0 )); then
@@ -486,24 +617,42 @@ jobs:
             MINUTES=$(( REMAINING / 60 ))
             SECONDS=$(( REMAINING % 60 ))
 
-            echo "[$(date -u '+%H:%M:%S UTC')] ⏱️ Remaining: ${MINUTES}m ${SECONDS}s"
+            STATUS="$(
+              docker inspect \
+                "$CONTAINER_NAME" \
+                --format='{{.State.Status}}' \
+                2>/dev/null \
+                || echo "unknown"
+            )"
+
+            echo "[$(date -u '+%H:%M:%S UTC')] ⏱️ ${MINUTES}m ${SECONDS}s remaining | MT5=${STATUS}"
+
+            if [[ "$STATUS" != "running" ]]; then
+              echo
+              echo "❌ MT5 container is no longer running."
+              echo
+              docker logs "$CONTAINER_NAME" || true
+              exit 1
+            fi
 
             sleep 30
           done
 
           echo
-          echo "⌛ Session duration completed."
+          echo "⌛ Requested session duration completed."
 
       # ============================================================
-      # 13. Collect diagnostics
+      # 14. Collect diagnostics
       # ============================================================
-      - name: 🧾 Collect diagnostics
+      - name: 🧾 Collect Diagnostics
         if: always()
         shell: bash
         run: |
           set +e
 
           mkdir -p "$GITHUB_WORKSPACE/logs"
+
+          echo "Collecting Docker information..."
 
           docker ps -a \
             > "$GITHUB_WORKSPACE/logs/docker-ps.txt" 2>&1
@@ -524,13 +673,28 @@ jobs:
               "$GITHUB_WORKSPACE/logs/cloudflared.log"
           fi
 
+          {
+            echo "========================================"
+            echo "SYSTEM INFORMATION"
+            echo "========================================"
+            uname -a
+            echo
+            free -h
+            echo
+            df -h
+            echo
+            docker --version
+            echo
+            docker info
+          } > "$GITHUB_WORKSPACE/logs/system-info.txt" 2>&1
+
           echo "✅ Diagnostics collected."
 
       # ============================================================
-      # 14. Upload artifacts
+      # 15. Upload artifacts
       # ============================================================
-      - name: 📦 Upload MT5 artifacts
-        if: ${{ always() && inputs.keep_artifacts }}
+      - name: 📦 Upload MT5 Artifacts
+        if: ${{ always() && inputs.save_artifacts }}
         uses: actions/upload-artifact@v4
         with:
           name: mt5-cloud-${{ github.run_id }}
@@ -543,9 +707,34 @@ jobs:
           compression-level: 6
 
       # ============================================================
-      # 15. Cleanup
+      # 16. Stop tunnel
       # ============================================================
-      - name: 🧹 Cleanup
+      - name: ☁️ Stop Cloudflare Tunnel
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          PID_FILE="$GITHUB_WORKSPACE/tunnel/cloudflared.pid"
+
+          if [[ -f "$PID_FILE" ]]; then
+            PID="$(cat "$PID_FILE")"
+
+            echo "Stopping cloudflared PID: $PID"
+
+            kill "$PID" 2>/dev/null || true
+
+            sleep 2
+
+            kill -9 "$PID" 2>/dev/null || true
+          fi
+
+          echo "✅ Tunnel cleanup complete."
+
+      # ============================================================
+      # 17. Stop MT5
+      # ============================================================
+      - name: 🧹 Stop MT5 Container
         if: always()
         shell: bash
         run: |
@@ -553,36 +742,34 @@ jobs:
 
           echo
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 CLEANUP"
+          echo "🧹 MT5 CLEANUP"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if [[ -f "$GITHUB_WORKSPACE/tunnel/cloudflared.pid" ]]; then
-
-            PID="$(cat "$GITHUB_WORKSPACE/tunnel/cloudflared.pid")"
-
-            if kill -0 "$PID" 2>/dev/null; then
-              echo "Stopping cloudflared..."
-              kill "$PID" 2>/dev/null || true
-            fi
-          fi
 
           if docker ps -q \
             --filter "name=^${CONTAINER_NAME}$" \
             | grep -q .; then
 
             echo "Stopping MT5 container..."
-            docker stop -t 10 "$CONTAINER_NAME" || true
+
+            docker stop \
+              --time 15 \
+              "$CONTAINER_NAME" \
+              || true
           fi
 
-          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+          docker rm \
+            --force \
+            "$CONTAINER_NAME" \
+            >/dev/null 2>&1 \
+            || true
 
           echo
-          echo "✅ Cleanup complete."
+          echo "✅ MT5 container removed."
 
       # ============================================================
-      # 16. Final summary
+      # 18. Final summary
       # ============================================================
-      - name: ✅ Final summary
+      - name: ✅ Final Summary
         if: always()
         shell: bash
         run: |
@@ -593,15 +780,17 @@ jobs:
           echo "📋 FINAL SUMMARY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo
-          echo "Workflow   : $GITHUB_WORKFLOW"
-          echo "Run ID     : $GITHUB_RUN_ID"
-          echo "Repository : $GITHUB_REPOSITORY"
-          echo "Runner     : $RUNNER_NAME"
-          echo "Resolution : ${{ inputs.resolution }}"
-          echo "Session    : ${{ inputs.session_minutes }} minutes"
-          echo "Tunnel     : ${{ inputs.enable_tunnel }}"
-          echo "Artifacts  : ${{ inputs.keep_artifacts }}"
+          echo "Workflow      : $GITHUB_WORKFLOW"
+          echo "Run ID        : $GITHUB_RUN_ID"
+          echo "Repository    : $GITHUB_REPOSITORY"
+          echo "Runner        : $RUNNER_NAME"
+          echo "Image         : ${{ inputs.mt5_image }}"
+          echo "Resolution    : ${{ inputs.resolution }}"
+          echo "Session       : ${{ inputs.session_minutes }} minutes"
+          echo "Browser       : ${{ inputs.enable_tunnel }}"
+          echo "Artifacts     : ${{ inputs.save_artifacts }}"
           echo
-          echo "✅ MT5 session completed."
-          echo "✅ Runtime resources cleaned up."
+          echo "✅ Workflow finished."
+          echo "✅ MT5 resources cleaned up."
+          echo
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
