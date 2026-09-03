@@ -36,50 +36,78 @@ on:
         default: true
 
       save_artifacts:
-        description: "📦 Save diagnostics as artifact"
+        description: "📦 Save diagnostics artifact"
         required: true
         type: boolean
         default: true
 
       clean_workspace:
-        description: "🧹 Remove previous MT5 workspace before starting"
+        description: "🧹 Delete previous MT5 workspace before start"
         required: true
         type: boolean
         default: false
 
+
+# ============================================================
+# Global Environment
+# ============================================================
+
 env:
-  # ---------------------------------------------------------
-  # Core
-  # ---------------------------------------------------------
+
+  # ----------------------------------------------------------
+  # Docker
+  # ----------------------------------------------------------
 
   CONTAINER_NAME: "mt5-cloud"
 
-  # Official upstream image used by the project.
   MT5_IMAGE: "gmag11/metatrader5_vnc:latest"
 
+
+  # ----------------------------------------------------------
   # KasmVNC
-  MT5_WEB_PORT: "3000"
+  # ----------------------------------------------------------
+
   MT5_WEB_BIND: "127.0.0.1"
+  MT5_WEB_PORT: "3000"
 
+
+  # ----------------------------------------------------------
   # mt5linux / RPyC
-  MT5_API_PORT: "8001"
-  MT5_API_BIND: "127.0.0.1"
+  # ----------------------------------------------------------
 
-  # ---------------------------------------------------------
-  # MT5 Web Authentication
-  # ---------------------------------------------------------
+  MT5_API_BIND: "127.0.0.1"
+  MT5_API_PORT: "8001"
+
+
+  # ----------------------------------------------------------
+  # KasmVNC credentials
+  #
+  # DEMO ONLY.
+  # Do not use this password for real sensitive environments.
+  # ----------------------------------------------------------
 
   MT5_WEB_USER: "trader"
-
-  # Demo/test credential.
-  # For real deployments, move this to GitHub Secrets.
   MT5_WEB_PASSWORD: "MT5-Demo-2026-StrongPassword!"
 
-  # ---------------------------------------------------------
+
+  # ----------------------------------------------------------
   # Runtime
-  # ---------------------------------------------------------
+  # ----------------------------------------------------------
 
   TZ: "UTC"
+
+  TCP_TIMEOUT_SECONDS: "120"
+  HTTP_TIMEOUT_SECONDS: "120"
+  TUNNEL_TIMEOUT_SECONDS: "120"
+
+  HEALTH_INTERVAL_SECONDS: "3"
+
+  PUBLIC_HTTP_TIMEOUT_SECONDS: "20"
+
+
+  # ----------------------------------------------------------
+  # Workspace
+  # ----------------------------------------------------------
 
   LOG_DIR: "${{ github.workspace }}/logs"
   TUNNEL_DIR: "${{ github.workspace }}/tunnel"
@@ -88,15 +116,34 @@ env:
   CLOUDFLARE_LOG: "${{ github.workspace }}/tunnel/cloudflared.log"
   TUNNEL_URL_FILE: "${{ github.workspace }}/tunnel/tunnel_url.txt"
 
-  # Force GitHub Actions to use Node 24 where supported.
+
+  # ----------------------------------------------------------
+  # GitHub Actions
+  # ----------------------------------------------------------
+
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+
+# ============================================================
+# Permissions
+# ============================================================
 
 permissions:
   contents: read
 
+
+# ============================================================
+# Concurrency
+# ============================================================
+
 concurrency:
   group: mt5-cloud-desktop
   cancel-in-progress: false
+
+
+# ============================================================
+# Job
+# ============================================================
 
 jobs:
 
@@ -104,84 +151,154 @@ jobs:
 
     runs-on: ubuntu-24.04
 
-    # Maximum possible session is 300 min.
-    # Extra time is reserved for pull/startup/cleanup.
     timeout-minutes: 360
+
 
     steps:
 
-      # -----------------------------------------------------
+      # ======================================================
       # Checkout
-      # -----------------------------------------------------
+      # ======================================================
 
       - name: "📥 Checkout repository"
+
         uses: actions/checkout@v5
 
-      # -----------------------------------------------------
-      # Make script executable
-      # -----------------------------------------------------
+
+      # ======================================================
+      # Validate launcher
+      # ======================================================
 
       - name: "🔧 Prepare MT5 launcher"
+
         shell: bash
+
         run: |
+
           set -Eeuo pipefail
 
-          if [[ ! -f "${GITHUB_WORKSPACE}/mt5.sh" ]]; then
+          SCRIPT="${GITHUB_WORKSPACE}/mt5.sh"
+
+
+          if [[ ! -f "${SCRIPT}" ]]; then
+
             echo "❌ mt5.sh was not found."
+
+            echo
+            echo "Expected:"
+            echo "${SCRIPT}"
+
             exit 1
+
           fi
 
-          chmod +x "${GITHUB_WORKSPACE}/mt5.sh"
 
-          echo "✅ mt5.sh is ready."
+          chmod +x "${SCRIPT}"
 
-      # -----------------------------------------------------
-      # Main runtime
-      # -----------------------------------------------------
+
+          echo "✅ mt5.sh found."
+
+          echo "Path: ${SCRIPT}"
+
+          echo
+          echo "Bash version:"
+
+          bash --version | head -n 1
+
+
+          echo
+          echo "Syntax check:"
+
+          bash -n "${SCRIPT}"
+
+          echo "✅ Bash syntax is valid."
+
+
+      # ======================================================
+      # Start MT5
+      # ======================================================
 
       - name: "🚀 Start MT5 Cloud Desktop"
+
         shell: bash
+
         env:
+
           INPUT_RESOLUTION: "${{ inputs.resolution }}"
+
           INPUT_SESSION_MINUTES: "${{ inputs.session_minutes }}"
+
           INPUT_ENABLE_TUNNEL: "${{ inputs.enable_tunnel }}"
+
           INPUT_SAVE_ARTIFACTS: "${{ inputs.save_artifacts }}"
+
           INPUT_CLEAN_WORKSPACE: "${{ inputs.clean_workspace }}"
+
         run: |
+
           set -Eeuo pipefail
 
           "${GITHUB_WORKSPACE}/mt5.sh"
 
-      # -----------------------------------------------------
-      # Diagnostics artifact
-      # -----------------------------------------------------
+
+      # ======================================================
+      # Diagnostics Artifact
+      # ======================================================
 
       - name: "📦 Upload diagnostics"
+
         if: ${{ always() && inputs.save_artifacts }}
+
         uses: actions/upload-artifact@v5
+
         with:
-          name: mt5-cloud-diagnostics-${{ github.run_id }}
+
+          name: "mt5-cloud-diagnostics-${{ github.run_id }}"
+
           path: |
+
             logs/
             tunnel/
+
           if-no-files-found: warn
+
           retention-days: 3
 
-      # -----------------------------------------------------
-      # Final information
-      # -----------------------------------------------------
+
+      # ======================================================
+      # Final Status
+      # ======================================================
 
       - name: "🏁 Final status"
+
         if: always()
+
         shell: bash
+
         run: |
+
           echo
+
           echo "============================================================"
+
           echo "🏁 MT5 Cloud Desktop workflow finished"
+
           echo "============================================================"
+
+          echo
+
           echo "Run ID       : ${GITHUB_RUN_ID}"
+
           echo "Resolution   : ${{ inputs.resolution }}"
+
           echo "Duration     : ${{ inputs.session_minutes }} minutes"
+
           echo "Tunnel       : ${{ inputs.enable_tunnel }}"
+
           echo "Artifacts    : ${{ inputs.save_artifacts }}"
+
+          echo "Clean data   : ${{ inputs.clean_workspace }}"
+
+          echo
+
           echo "============================================================"
