@@ -1,1254 +1,1157 @@
 #!/usr/bin/env bash
 
-# ============================================================
-# MT5 CLOUD DESKTOP
-# ============================================================
-#
-# GitHub Actions runtime for:
-#
-#   MetaTrader 5
-#   Wine
-#   KasmVNC
-#   mt5linux
-#   RPyC
-#   Cloudflare Quick Tunnel
-#
-# Design:
-#
-#   GitHub Runner
-#       │
-#       ▼
-#   Docker Container
-#       │
-#       ├── KasmVNC :3000
-#       │
-#       └── mt5linux/RPyC :8001
-#                │
-#                ▼
-#            Python / MT5
-#
-# Cloudflare:
-#
-#   Internet
-#      │
-#      ▼
-#   trycloudflare.com
-#      │
-#      ▼
-#   127.0.0.1:3000
-#
-# IMPORTANT:
-#
-# - No Docker build
-# - No GitHub Cache
-# - No Docker --init
-# - Port 8001 remains private
-# - Only KasmVNC :3000 is tunneled
-# ============================================================
-
-
-# ============================================================
-# Bash Safety
-# ============================================================
-
 set -Eeuo pipefail
 
-
-# ============================================================
-# Basic Variables
-# ============================================================
-
-CONTAINER_NAME="${CONTAINER_NAME:-mt5-cloud}"
-
-MT5_IMAGE="${MT5_IMAGE:-gmag11/metatrader5_vnc:latest}"
-
-
-MT5_WEB_BIND="${MT5_WEB_BIND:-127.0.0.1}"
-
-MT5_WEB_PORT="${MT5_WEB_PORT:-3000}"
-
-
-MT5_API_BIND="${MT5_API_BIND:-127.0.0.1}"
-
-MT5_API_PORT="${MT5_API_PORT:-8001}"
-
-
-MT5_WEB_USER="${MT5_WEB_USER:-trader}"
-
-MT5_WEB_PASSWORD="${MT5_WEB_PASSWORD:-MT5-Demo-2026-StrongPassword!}"
+# ==============================================================
+# MT5 Cloud Desktop
+#
+# Host-side lifecycle controller for GitHub Actions.
+#
+# Responsibilities:
+#   - Validate runtime
+#   - Pull official upstream MT5 image
+#   - Generate a corrected MT5 startup script
+#   - Run the container
+#   - Keep ports private
+#   - Health-check KasmVNC and mt5linux
+#   - Start Cloudflare Quick Tunnel
+#   - Monitor the session
+#   - Collect diagnostics
+#   - Cleanup everything on exit
+#
+# No custom Docker image.
+# No GitHub Actions cache.
+# ==============================================================
 
 
-TZ="${TZ:-UTC}"
+# ==============================================================
+# Paths
+# ==============================================================
 
+ROOT_DIR="${GITHUB_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
-# ============================================================
-# GitHub Workspace
-# ============================================================
-
-WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
-
-
-LOG_DIR="${LOG_DIR:-${WORKSPACE_ROOT}/logs}"
-
-TUNNEL_DIR="${TUNNEL_DIR:-${WORKSPACE_ROOT}/tunnel}"
-
-MT5_DATA_DIR="${MT5_DATA_DIR:-${WORKSPACE_ROOT}/mt5_data}"
-
-
-CLOUDFLARE_LOG="${CLOUDFLARE_LOG:-${TUNNEL_DIR}/cloudflared.log}"
-
-TUNNEL_URL_FILE="${TUNNEL_URL_FILE:-${TUNNEL_DIR}/tunnel_url.txt}"
-
-
-# ============================================================
-# Inputs
-# ============================================================
-
-RESOLUTION="${INPUT_RESOLUTION:-1920x1080}"
-
-SESSION_MINUTES="${INPUT_SESSION_MINUTES:-60}"
-
-ENABLE_TUNNEL="${INPUT_ENABLE_TUNNEL:-true}"
-
-SAVE_ARTIFACTS="${INPUT_SAVE_ARTIFACTS:-true}"
-
-CLEAN_WORKSPACE="${INPUT_CLEAN_WORKSPACE:-false}"
-
-
-# ============================================================
-# Timeouts
-# ============================================================
-
-TCP_TIMEOUT_SECONDS="${TCP_TIMEOUT_SECONDS:-120}"
-
-HTTP_TIMEOUT_SECONDS="${HTTP_TIMEOUT_SECONDS:-120}"
-
-TUNNEL_TIMEOUT_SECONDS="${TUNNEL_TIMEOUT_SECONDS:-120}"
-
-HEALTH_INTERVAL_SECONDS="${HEALTH_INTERVAL_SECONDS:-3}"
-
-PUBLIC_HTTP_TIMEOUT_SECONDS="${PUBLIC_HTTP_TIMEOUT_SECONDS:-20}"
-
-
-# ============================================================
-# Runtime State
-# ============================================================
-
-CLOUDFLARED_PID=""
-
-MAIN_LOG=""
-
-START_TIME_UNIX="0"
-
-END_TIME_UNIX="0"
-
-
-# ============================================================
-# Directories
-# ============================================================
+LOG_DIR="${ROOT_DIR}/logs"
+TUNNEL_DIR="${ROOT_DIR}/tunnel"
+DATA_DIR="${ROOT_DIR}/mt5_data"
+RUNTIME_DIR="${ROOT_DIR}/.mt5-runtime"
 
 mkdir -p \
   "${LOG_DIR}" \
   "${TUNNEL_DIR}" \
-  "${MT5_DATA_DIR}"
+  "${DATA_DIR}" \
+  "${RUNTIME_DIR}"
 
+
+# ==============================================================
+# Logging
+# ==============================================================
 
 MAIN_LOG="${LOG_DIR}/mt5-runtime.log"
-
-touch "${MAIN_LOG}"
-
-
-# ============================================================
-# Logging
-# ============================================================
 
 exec > >(tee -a "${MAIN_LOG}") 2>&1
 
 
 timestamp() {
-
   date -u '+%Y-%m-%d %H:%M:%S UTC'
-
 }
 
 
 log() {
-
-  echo
-
   echo "[$(timestamp)] $*"
-
 }
 
 
 section() {
+  echo
+  echo "============================================================"
+  echo "$1"
+  echo "============================================================"
+}
+
+
+die() {
+  echo
+  echo "❌ ERROR: $*"
+  exit 1
+}
+
+
+# ==============================================================
+# Configuration
+# ==============================================================
+
+CONTAINER_NAME="${CONTAINER_NAME:-mt5-cloud}"
+
+MT5_IMAGE="${MT5_IMAGE:-ghcr.io/gmag11/metatrader5-docker:2.3}"
+
+WEB_BIND="${MT5_WEB_BIND:-127.0.0.1}"
+WEB_PORT="${MT5_WEB_PORT:-3000}"
+
+API_BIND="${MT5_API_BIND:-127.0.0.1}"
+API_PORT="${MT5_API_PORT:-8001}"
+
+WEB_USER="${MT5_WEB_USER:-trader}"
+WEB_PASSWORD="${MT5_WEB_PASSWORD:-MT5-Demo-2026-StrongPassword!}"
+
+RESOLUTION="${MT5_RESOLUTION:-1920x1080}"
+
+SESSION_MINUTES="${MT5_SESSION_MINUTES:-60}"
+
+ENABLE_TUNNEL="${MT5_ENABLE_TUNNEL:-true}"
+SAVE_ARTIFACTS="${MT5_SAVE_ARTIFACTS:-true}"
+CLEAN_WORKSPACE="${MT5_CLEAN_WORKSPACE:-false}"
+
+TCP_TIMEOUT="${MT5_TCP_TIMEOUT:-120}"
+HTTP_TIMEOUT="${MT5_HTTP_TIMEOUT:-180}"
+TUNNEL_TIMEOUT="${MT5_TUNNEL_TIMEOUT:-120}"
+CHECK_INTERVAL="${MT5_CHECK_INTERVAL:-3}"
+
+CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-}"
+
+CLOUDFLARE_LOG="${TUNNEL_DIR}/cloudflared.log"
+TUNNEL_URL_FILE="${TUNNEL_DIR}/tunnel-url.txt"
+
+CONTAINER_START="${RUNTIME_DIR}/mt5-start.sh"
+
+CLOUDFLARE_PID=""
+
+
+# ==============================================================
+# Cleanup
+# ==============================================================
+
+cleanup() {
+
+  local rc=$?
+
+  trap - EXIT
+
+  section "🧹 Cleanup"
+
+  # ------------------------------------------------------------
+  # Cloudflare
+  # ------------------------------------------------------------
+
+  if [[ -n "${CLOUDFLARE_PID}" ]]; then
+
+    if kill -0 "${CLOUDFLARE_PID}" 2>/dev/null; then
+
+      log "Stopping Cloudflare..."
+
+      kill "${CLOUDFLARE_PID}" 2>/dev/null || true
+
+      sleep 2
+
+      kill -9 "${CLOUDFLARE_PID}" 2>/dev/null || true
+
+    fi
+
+  fi
+
+
+  # ------------------------------------------------------------
+  # MT5 container
+  # ------------------------------------------------------------
+
+  if docker ps -a --format '{{.Names}}' 2>/dev/null \
+    | grep -qx "${CONTAINER_NAME}"; then
+
+    log "Stopping MT5 container..."
+
+    docker stop \
+      --timeout 20 \
+      "${CONTAINER_NAME}" \
+      >/dev/null 2>&1 || true
+
+
+    log "Removing MT5 container..."
+
+    docker rm \
+      -f \
+      "${CONTAINER_NAME}" \
+      >/dev/null 2>&1 || true
+
+  fi
+
 
   echo
   echo "============================================================"
-  echo "$*"
+  echo "🏁 Cleanup completed"
+  echo "Exit code: ${rc}"
   echo "============================================================"
-  echo
+
+  exit "${rc}"
+}
+
+trap cleanup EXIT
+
+
+# ==============================================================
+# Validate parameters
+# ==============================================================
+
+validate_config() {
+
+  [[ "${SESSION_MINUTES}" =~ ^[0-9]+$ ]] \
+    || die "SESSION_MINUTES must be numeric."
+
+  if (( SESSION_MINUTES < 15 || SESSION_MINUTES > 300 )); then
+    die "Session duration must be between 15 and 300 minutes."
+  fi
+
+
+  case "${RESOLUTION}" in
+
+    1920x1080)
+      ;;
+
+    1600x900)
+      ;;
+
+    1280x720)
+      ;;
+
+    *)
+      die "Unsupported resolution: ${RESOLUTION}"
+      ;;
+
+  esac
+
+
+  case "${ENABLE_TUNNEL}" in
+    true|false)
+      ;;
+    *)
+      die "MT5_ENABLE_TUNNEL must be true or false."
+      ;;
+  esac
+
+
+  case "${SAVE_ARTIFACTS}" in
+    true|false)
+      ;;
+    *)
+      die "MT5_SAVE_ARTIFACTS must be true or false."
+      ;;
+  esac
+
+
+  case "${CLEAN_WORKSPACE}" in
+    true|false)
+      ;;
+    *)
+      die "MT5_CLEAN_WORKSPACE must be true or false."
+      ;;
+  esac
+}
+
+
+# ==============================================================
+# Wait for TCP
+# ==============================================================
+
+wait_for_tcp() {
+
+  local host="$1"
+  local port="$2"
+  local timeout="$3"
+
+  local started
+  started="$(date +%s)"
+
+
+  while true; do
+
+    if nc -z -w 2 "${host}" "${port}" >/dev/null 2>&1; then
+      return 0
+    fi
+
+
+    if ! docker inspect \
+      -f '{{.State.Running}}' \
+      "${CONTAINER_NAME}" \
+      2>/dev/null \
+      | grep -qx true; then
+
+      return 1
+
+    fi
+
+
+    if (( $(date +%s) - started >= timeout )); then
+      return 1
+    fi
+
+
+    sleep "${CHECK_INTERVAL}"
+
+  done
+}
+
+
+# ==============================================================
+# HTTP readiness
+# ==============================================================
+
+wait_for_http() {
+
+  local url="$1"
+  local timeout="$2"
+
+  local started
+  local code
+  local rc
+
+  started="$(date +%s)"
+
+
+  while true; do
+
+    if code="$(
+      curl \
+        --silent \
+        --show-error \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        --connect-timeout 5 \
+        --max-time 15 \
+        "${url}" \
+        2>"${LOG_DIR}/curl-error.log"
+    )"; then
+
+      rc=0
+
+    else
+
+      rc=$?
+
+      code="000"
+
+    fi
+
+
+    # KasmVNC normally answers 401 because basic auth is enabled.
+    #
+    # 2xx = success
+    # 3xx = success
+    # 401 = expected auth challenge
+    # 403 = service alive but access denied
+    #
+
+    if [[ "${code}" =~ ^2[0-9][0-9]$|^3[0-9][0-9]$|^401$|^403$ ]]; then
+
+      log "HTTP ${code} from ${url}"
+
+      return 0
+
+    fi
+
+
+    if (( $(date +%s) - started >= timeout )); then
+
+      log "HTTP readiness timeout."
+
+      log "URL       : ${url}"
+      log "Last code : ${code}"
+      log "Curl rc   : ${rc}"
+
+      cat "${LOG_DIR}/curl-error.log" \
+        2>/dev/null || true
+
+      return 1
+
+    fi
+
+
+    sleep "${CHECK_INTERVAL}"
+
+  done
+}
+
+
+# ==============================================================
+# Generate corrected container startup script
+#
+# We replace ONLY the upstream /Metatrader/start.sh at runtime.
+# No custom Docker image is built.
+#
+# Reasons:
+#   1. Initialize Wine before downloading mono.msi.
+#   2. Use current mt5linux CLI.
+#   3. Install current mt5linux on both Linux + Wine Python.
+#   4. Run mt5linux server under Wine directly.
+# ==============================================================
+
+write_container_start() {
+
+cat >"${CONTAINER_START}" <<'CONTAINER_START_EOF'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+
+# ==============================================================
+# Wine
+# ==============================================================
+
+WINEPREFIX="${WINEPREFIX:-/config/.wine}"
+
+export WINEPREFIX
+
+export WINEDEBUG="${WINEDEBUG:--all}"
+
+
+# ==============================================================
+# Files
+# ==============================================================
+
+MT5_FILE="${WINEPREFIX}/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+
+MONO_MARKER="${WINEPREFIX}/drive_c/windows/mono"
+
+MONO_MSI="${WINEPREFIX}/drive_c/mono.msi"
+
+MT5_INSTALLER="${WINEPREFIX}/drive_c/mt5setup.exe"
+
+
+# ==============================================================
+# Download URLs
+# ==============================================================
+
+MONO_URL="https://dl.winehq.org/wine/wine-mono/10.3.0/wine-mono-10.3.0-x86.msi"
+
+PYTHON_URL="https://www.python.org/ftp/python/3.9.13/python-3.9.13.exe"
+
+MT5_SETUP_URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+
+
+# ==============================================================
+# Runtime configuration
+# ==============================================================
+
+MT5_SERVER_PORT="${MT5_SERVER_PORT:-8001}"
+
+MT5_CMD_OPTIONS="${MT5_CMD_OPTIONS:-}"
+
+
+# ==============================================================
+# Logging
+# ==============================================================
+
+log() {
+
+  echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] $*"
 
 }
 
 
 die() {
 
-  echo
-
-  echo "❌ ERROR: $*"
+  log "ERROR: $*"
 
   exit 1
 
 }
 
 
-# ============================================================
-# Error Handler
-# ============================================================
+# ==============================================================
+# Basic checks
+# ==============================================================
 
-on_error() {
+command -v curl >/dev/null 2>&1 \
+  || die "curl is not installed."
 
-  local exit_code=$?
+command -v wine >/dev/null 2>&1 \
+  || die "wine is not installed."
 
-  local line_number="${BASH_LINENO[0]:-unknown}"
 
-  local command="${BASH_COMMAND:-unknown}"
+# ==============================================================
+# Ensure Wine directory exists
+# ==============================================================
 
+mkdir -p "${WINEPREFIX}/drive_c"
 
-  echo
 
-  echo "============================================================"
-  echo "❌ COMMAND FAILED"
-  echo "============================================================"
+# ==============================================================
+# [0/7] Initialize Wine PREFIX
+# ==============================================================
 
-  echo
+log "[0/7] Initializing Wine prefix..."
 
-  echo "Exit code : ${exit_code}"
+if ! wineboot -u >/tmp/wineboot.log 2>&1; then
 
-  echo "Line      : ${line_number}"
+  cat /tmp/wineboot.log || true
 
-  echo "Command   : ${command}"
+  die "wineboot failed."
 
-  echo
+fi
 
-  echo "Container status:"
 
-  docker inspect \
-    --format \
-    'Running={{.State.Running}} | Status={{.State.Status}} | ExitCode={{.State.ExitCode}} | Started={{.State.StartedAt}}' \
-    "${CONTAINER_NAME}" \
-    2>/dev/null \
-    || true
+for _ in $(seq 1 60); do
 
-
-  echo
-
-  echo "Recent container logs:"
-
-  docker logs \
-    --tail 200 \
-    "${CONTAINER_NAME}" \
-    2>&1 \
-    || true
-
-
-  echo
-
-  echo "============================================================"
-
-
-  return "${exit_code}"
-
-}
-
-
-trap on_error ERR
-
-
-# ============================================================
-# Container Functions
-# ============================================================
-
-container_exists() {
-
-  docker inspect \
-    "${CONTAINER_NAME}" \
-    >/dev/null 2>&1
-
-}
-
-
-container_running() {
-
-  local state
-
-  state="$(
-    docker inspect \
-      --format '{{.State.Running}}' \
-      "${CONTAINER_NAME}" \
-      2>/dev/null \
-      || echo "false"
-  )"
-
-
-  [[ "${state}" == "true" ]]
-
-}
-
-
-show_container_logs() {
-
-  echo
-
-  echo "------------------------------------------------------------"
-
-  echo "📋 MT5 container logs"
-
-  echo "------------------------------------------------------------"
-
-
-  docker logs \
-    --tail 500 \
-    "${CONTAINER_NAME}" \
-    2>&1 \
-    || true
-
-
-  echo
-
-  echo "------------------------------------------------------------"
-
-}
-
-
-# ============================================================
-# Cleanup
-# ============================================================
-
-cleanup() {
-
-  local exit_code=$?
-
-  set +e
-
-
-  section "🧹 Cleanup"
-
-
-  # ----------------------------------------------------------
-  # Cloudflare
-  # ----------------------------------------------------------
-
-  if [[ -n "${CLOUDFLARED_PID}" ]]; then
-
-    if kill -0 \
-      "${CLOUDFLARED_PID}" \
-      2>/dev/null; then
-
-      log "Stopping Cloudflare..."
-
-      kill \
-        "${CLOUDFLARED_PID}" \
-        2>/dev/null \
-        || true
-
-
-      sleep 2
-
-
-      kill -9 \
-        "${CLOUDFLARED_PID}" \
-        2>/dev/null \
-        || true
-
-    fi
-
+  if [[ -d "${WINEPREFIX}/drive_c/windows" ]]; then
+    break
   fi
 
+  sleep 1
 
-  # ----------------------------------------------------------
-  # Docker container
-  # ----------------------------------------------------------
-
-  if container_exists; then
-
-    if container_running; then
-
-      log "Stopping MT5 container..."
+done
 
 
-      docker stop \
-        --timeout 15 \
-        "${CONTAINER_NAME}" \
-        2>&1 \
-        || true
+if [[ ! -d "${WINEPREFIX}/drive_c/windows" ]]; then
 
-    fi
-
-
-    log "Removing MT5 container..."
-
-
-    docker rm \
-      -f \
-      "${CONTAINER_NAME}" \
-      2>&1 \
-      || true
-
-  fi
-
-
-  echo
-
-  echo "============================================================"
-
-  echo "🏁 Cleanup completed"
-
-  echo "Exit code: ${exit_code}"
-
-  echo "============================================================"
-
-
-  return "${exit_code}"
-
-}
-
-
-trap cleanup EXIT
-
-
-# ============================================================
-# Validate Configuration
-# ============================================================
-
-section "🔎 Validate configuration"
-
-
-if ! [[ "${SESSION_MINUTES}" =~ ^[0-9]+$ ]]; then
-
-  die "Invalid SESSION_MINUTES: ${SESSION_MINUTES}"
+  die "Wine prefix was not initialized correctly."
 
 fi
 
 
-if (( SESSION_MINUTES < 1 )); then
+# ==============================================================
+# [1/7] Wine Mono
+# ==============================================================
 
-  die "Session duration must be at least 1 minute."
+if [[ ! -e "${MONO_MARKER}" ]]; then
 
-fi
+  log "[1/7] Downloading Wine Mono..."
 
-
-if (( SESSION_MINUTES > 300 )); then
-
-  die "Session duration cannot exceed 300 minutes."
-
-fi
-
-
-if ! [[ "${RESOLUTION}" =~ ^[0-9]+x[0-9]+$ ]]; then
-
-  die "Invalid resolution: ${RESOLUTION}"
-
-fi
-
-
-if ! [[ "${TCP_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]]; then
-
-  die "Invalid TCP timeout."
-
-fi
-
-
-if ! [[ "${HTTP_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]]; then
-
-  die "Invalid HTTP timeout."
-
-fi
-
-
-if ! [[ "${TUNNEL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]]; then
-
-  die "Invalid tunnel timeout."
-
-fi
-
-
-if ! [[ "${HEALTH_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]]; then
-
-  die "Invalid health interval."
-
-fi
-
-
-log "Container       : ${CONTAINER_NAME}"
-
-log "Image           : ${MT5_IMAGE}"
-
-log "Resolution      : ${RESOLUTION}"
-
-log "Session         : ${SESSION_MINUTES} minutes"
-
-log "Web endpoint    : ${MT5_WEB_BIND}:${MT5_WEB_PORT}"
-
-log "API endpoint    : ${MT5_API_BIND}:${MT5_API_PORT}"
-
-log "Tunnel enabled  : ${ENABLE_TUNNEL}"
-
-log "Clean workspace : ${CLEAN_WORKSPACE}"
-
-log "Save artifacts  : ${SAVE_ARTIFACTS}"
-
-echo
-
-echo "Web user        : ${MT5_WEB_USER}"
-
-echo "Web password    : ${MT5_WEB_PASSWORD}"
-
-
-# ============================================================
-# Runner Diagnostics
-# ============================================================
-
-section "🖥️ Runner diagnostics"
-
-
-log "Operating system:"
-
-cat /etc/os-release || true
-
-
-echo
-
-log "Kernel:"
-
-uname -a || true
-
-
-echo
-
-log "Architecture:"
-
-uname -m
-
-
-echo
-
-log "CPU:"
-
-nproc || true
-
-
-echo
-
-log "Memory:"
-
-free -h || true
-
-
-echo
-
-log "Disk:"
-
-df -h / || true
-
-
-echo
-
-log "Docker:"
-
-docker --version || true
-
-
-echo
-
-log "Docker server:"
-
-docker info \
-  --format \
-  'Server={{.ServerVersion}} | Storage={{.Driver}} | CPUs={{.NCPU}} | Memory={{.MemTotal}}' \
-  2>/dev/null \
-  || true
-
-
-# ============================================================
-# Architecture
-# ============================================================
-
-section "🧬 Validate architecture"
-
-
-ARCH="$(uname -m)"
-
-
-if [[ "${ARCH}" != "x86_64" ]]; then
-
-  die "This MT5 image requires x86_64 / AMD64. Current architecture: ${ARCH}"
-
-fi
-
-
-log "✅ AMD64 / x86_64 detected."
-
-
-# ============================================================
-# Install Dependencies
-# ============================================================
-
-section "📦 Install runtime dependencies"
-
-
-export DEBIAN_FRONTEND=noninteractive
-
-
-sudo apt-get update -qq
-
-
-sudo apt-get install \
-  -y \
-  -qq \
-  ca-certificates \
-  curl \
-  jq \
-  netcat-openbsd \
-  procps
-
-
-log "✅ Dependencies installed."
-
-
-# ============================================================
-# Install Cloudflared
-# ============================================================
-
-install_cloudflared() {
-
-  if command -v cloudflared >/dev/null 2>&1; then
-
-    log "cloudflared is already installed."
-
-    cloudflared --version
-
-    return 0
-
-  fi
-
-
-  log "Downloading latest cloudflared..."
-
-
-  local package="/tmp/cloudflared-amd64.deb"
-
-
-  rm -f "${package}"
+  rm -f "${MONO_MSI}"
 
 
   curl \
     --fail \
-    --silent \
-    --show-error \
     --location \
-    --retry 3 \
+    --retry 4 \
     --retry-delay 2 \
-    --connect-timeout 15 \
-    --max-time 120 \
-    -o "${package}" \
-    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+    "${MONO_URL}" \
+    --output "${MONO_MSI}"
 
 
-  sudo dpkg \
-    -i \
-    "${package}"
+  log "[1/7] Installing Wine Mono..."
 
 
-  rm -f "${package}"
+  WINEDLLOVERRIDES=mscoree=d \
+  wine msiexec \
+    /i "${MONO_MSI}" \
+    /qn
 
 
-  if ! command -v cloudflared >/dev/null 2>&1; then
+  rm -f "${MONO_MSI}"
 
-    die "cloudflared installation failed."
+
+  log "[1/7] Mono installed."
+
+else
+
+  log "[1/7] Mono is already installed."
+
+fi
+
+
+# ==============================================================
+# [2/7] Configure Wine
+# ==============================================================
+
+log "[2/7] Configuring Wine Windows version..."
+
+wine reg add \
+  'HKEY_CURRENT_USER\Software\Wine' \
+  /v Version \
+  /t REG_SZ \
+  /d win10 \
+  /f \
+  >/dev/null
+
+
+# ==============================================================
+# [3/7] Install MetaTrader 5 if needed
+# ==============================================================
+
+if [[ ! -e "${MT5_FILE}" ]]; then
+
+  log "[3/7] MetaTrader 5 is not installed."
+
+  log "[3/7] Downloading MT5 installer..."
+
+  rm -f "${MT5_INSTALLER}"
+
+
+  curl \
+    --fail \
+    --location \
+    --retry 4 \
+    --retry-delay 2 \
+    "${MT5_SETUP_URL}" \
+    --output "${MT5_INSTALLER}"
+
+
+  log "[3/7] Installing MetaTrader 5..."
+
+  wine \
+    "${MT5_INSTALLER}" \
+    /auto
+
+
+  rm -f "${MT5_INSTALLER}"
+
+else
+
+  log "[3/7] MetaTrader 5 already installed."
+
+fi
+
+
+# ==============================================================
+# Verify MT5
+# ==============================================================
+
+if [[ ! -e "${MT5_FILE}" ]]; then
+
+  die "MetaTrader 5 terminal64.exe was not found."
+
+fi
+
+
+# ==============================================================
+# [4/7] Start MT5
+# ==============================================================
+
+log "[4/7] Starting MetaTrader 5..."
+
+if pgrep -af 'terminal64\.exe' >/dev/null 2>&1; then
+
+  log "[4/7] MetaTrader 5 is already running."
+
+else
+
+  if [[ -n "${MT5_CMD_OPTIONS}" ]]; then
+
+    # Intentional word splitting because this variable represents
+    # command-line options.
+    #
+    # shellcheck disable=SC2206
+    MT5_ARGS=( ${MT5_CMD_OPTIONS} )
+
+
+    wine \
+      "${MT5_FILE}" \
+      "${MT5_ARGS[@]}" \
+      >/tmp/mt5-terminal.log \
+      2>&1 &
+
+  else
+
+    wine \
+      "${MT5_FILE}" \
+      >/tmp/mt5-terminal.log \
+      2>&1 &
+
+  fi
+
+fi
+
+
+# ==============================================================
+# [5/7] Install Windows Python
+# ==============================================================
+
+if ! wine python --version >/dev/null 2>&1; then
+
+  log "[5/7] Downloading Windows Python 3.9.13..."
+
+  rm -f /tmp/python-installer.exe
+
+
+  curl \
+    --fail \
+    --location \
+    --retry 4 \
+    --retry-delay 2 \
+    "${PYTHON_URL}" \
+    --output /tmp/python-installer.exe
+
+
+  log "[5/7] Installing Python in Wine..."
+
+
+  wine \
+    /tmp/python-installer.exe \
+    /quiet \
+    InstallAllUsers=1 \
+    PrependPath=1 \
+    Include_test=0
+
+
+  rm -f /tmp/python-installer.exe
+
+else
+
+  log "[5/7] Python is already installed in Wine."
+
+fi
+
+
+wine python --version
+
+
+# ==============================================================
+# [6/7] Windows Python dependencies
+# ==============================================================
+
+log "[6/7] Updating Windows pip..."
+
+wine \
+  python \
+  -m pip \
+  install \
+  --upgrade \
+  --no-cache-dir \
+  pip \
+  setuptools \
+  wheel
+
+
+log "[6/7] Installing MetaTrader5 + current mt5linux..."
+
+wine \
+  python \
+  -m pip \
+  install \
+  --upgrade \
+  --no-cache-dir \
+  MetaTrader5 \
+  mt5linux
+
+
+# ==============================================================
+# [6/7] Linux-side mt5linux
+# ==============================================================
+
+log "[6/7] Installing Linux mt5linux client..."
+
+python3 \
+  -m pip \
+  install \
+  --break-system-packages \
+  --upgrade \
+  --no-cache-dir \
+  mt5linux
+
+
+# ==============================================================
+# [7/7] Start current mt5linux server
+#
+# IMPORTANT:
+# Current mt5linux no longer uses the old "-w wine python.exe"
+# syntax used by the upstream container.
+#
+# The modern architecture is:
+#
+#   Wine Python
+#       ↓
+#   python -m mt5linux
+#       ↓
+#   RPyC :8001
+#
+# ==============================================================
+
+log "[7/7] Starting mt5linux RPyC server..."
+
+
+# Clean up only an old copy created by this container.
+pkill \
+  -f 'python.*-m mt5linux' \
+  >/dev/null 2>&1 \
+  || true
+
+
+sleep 1
+
+
+wine \
+  python \
+  -m mt5linux \
+  --host 0.0.0.0 \
+  --port "${MT5_SERVER_PORT}" \
+  >/tmp/mt5linux-server.log \
+  2>&1 &
+
+
+# ==============================================================
+# Wait for mt5linux
+# ==============================================================
+
+MT5LINUX_READY="false"
+
+
+for _ in $(seq 1 90); do
+
+  if ss -ltn 2>/dev/null \
+    | grep -q ":${MT5_SERVER_PORT} "; then
+
+    MT5LINUX_READY="true"
+
+    log "[7/7] mt5linux server is listening on ${MT5_SERVER_PORT}."
+
+    break
 
   fi
 
 
-  cloudflared --version
+  sleep 1
+
+done
 
 
-  log "✅ cloudflared installed."
+if [[ "${MT5LINUX_READY}" != "true" ]]; then
 
+  log "============================================================"
+  log "mt5linux startup log"
+  log "============================================================"
+
+  cat /tmp/mt5linux-server.log || true
+
+
+  log "============================================================"
+  log "MT5 terminal log"
+  log "============================================================"
+
+  cat /tmp/mt5-terminal.log || true
+
+
+  die "mt5linux server failed to bind port ${MT5_SERVER_PORT}."
+
+fi
+
+
+# ==============================================================
+# Runtime ready
+# ==============================================================
+
+log "============================================================"
+log "✅ MT5 runtime is ready"
+log "============================================================"
+
+log "Wine prefix : ${WINEPREFIX}"
+log "MT5         : ${MT5_FILE}"
+log "mt5linux    : 0.0.0.0:${MT5_SERVER_PORT}"
+
+log "============================================================"
+
+
+# Keep this service alive.
+wait
+CONTAINER_START_EOF
+
+  chmod +x "${CONTAINER_START}"
 }
 
 
-if [[ "${ENABLE_TUNNEL,,}" == "true" ]]; then
+# ==============================================================
+# Runner diagnostics
+# ==============================================================
 
-  section "☁️ Cloudflare Tunnel"
+runner_diagnostics() {
 
-  install_cloudflared
+  section "🖥 Runner diagnostics"
 
-else
+  echo "Runner:"
+  uname -a
 
-  log "Cloudflare Tunnel disabled."
+  echo
+  echo "Architecture:"
+  uname -m
 
-fi
+  echo
+  echo "CPU:"
+  nproc
 
+  echo
+  echo "Memory:"
+  free -h
 
-# ============================================================
-# Prepare Workspace
-# ============================================================
+  echo
+  echo "Disk:"
+  df -h /
 
-section "📁 Prepare workspace"
-
-
-mkdir -p \
-  "${LOG_DIR}" \
-  "${TUNNEL_DIR}" \
-  "${MT5_DATA_DIR}"
-
-
-rm -f \
-  "${TUNNEL_URL_FILE}" \
-  "${CLOUDFLARE_LOG}" \
-  "${LOG_DIR}/http-health-error.txt"
-
-
-if [[ "${CLEAN_WORKSPACE,,}" == "true" ]]; then
-
-  log "🧹 Cleaning MT5 workspace..."
+  echo
+  echo "Docker:"
+  docker --version
+}
 
 
-  find \
-    "${MT5_DATA_DIR}" \
-    -mindepth 1 \
-    -maxdepth 1 \
-    -exec rm -rf {} +
+# ==============================================================
+# Main
+# ==============================================================
+
+section "🚀 MT5 Cloud Desktop"
+
+validate_config
+
+runner_diagnostics
 
 
-  log "✅ MT5 workspace cleaned."
+# ==============================================================
+# Architecture check
+# ==============================================================
 
-else
+if [[ "$(uname -m)" != "x86_64" ]]; then
 
-  log "Keeping MT5 workspace."
-
-fi
-
-
-# ============================================================
-# Remove Existing Container
-# ============================================================
-
-section "🧹 Remove stale MT5 container"
-
-
-if container_exists; then
-
-  log "Existing container found."
-
-
-  docker stop \
-    --timeout 10 \
-    "${CONTAINER_NAME}" \
-    2>&1 \
-    || true
-
-
-  docker rm \
-    -f \
-    "${CONTAINER_NAME}" \
-    2>&1 \
-    || true
-
-
-  log "✅ Old container removed."
-
-else
-
-  log "No existing MT5 container."
+  die "This MT5 Docker image requires x86_64/amd64."
 
 fi
 
 
-# ============================================================
-# Pull Image
-# ============================================================
+# ==============================================================
+# Install host utilities
+# ==============================================================
 
-section "🐳 Pull MT5 image"
+section "📦 Host dependencies"
+
+sudo apt-get update -y >/dev/null
+
+sudo apt-get install \
+  -y \
+  --no-install-recommends \
+  ca-certificates \
+  curl \
+  jq \
+  netcat-openbsd \
+  procps \
+  >/dev/null
 
 
-log "Pulling image:"
+# ==============================================================
+# Cloudflare
+# ==============================================================
 
-echo "${MT5_IMAGE}"
+if [[ "${ENABLE_TUNNEL}" == "true" ]]; then
 
+  section "☁️ Cloudflare"
+
+  if command -v cloudflared >/dev/null 2>&1; then
+
+    CLOUDFLARED_BIN="$(command -v cloudflared)"
+
+  else
+
+    log "Installing Cloudflare cloudflared..."
+
+    curl \
+      --fail \
+      --location \
+      --retry 4 \
+      --retry-delay 2 \
+      "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb" \
+      --output "${RUNTIME_DIR}/cloudflared.deb"
+
+
+    sudo dpkg \
+      -i \
+      "${RUNTIME_DIR}/cloudflared.deb"
+
+
+    CLOUDFLARED_BIN="$(command -v cloudflared || true)"
+
+  fi
+
+
+  [[ -n "${CLOUDFLARED_BIN}" ]] \
+    || die "cloudflared installation failed."
+
+
+  "${CLOUDFLARED_BIN}" --version
+
+fi
+
+
+# ==============================================================
+# Session-local data
+# ==============================================================
+
+section "💾 Workspace"
+
+if [[ "${CLEAN_WORKSPACE}" == "true" ]]; then
+
+  log "Cleaning session-local MT5 data..."
+
+  rm -rf "${DATA_DIR:?}"/*
+
+else
+
+  log "Keeping existing session-local data."
+
+fi
+
+
+# ==============================================================
+# Generate corrected container startup
+# ==============================================================
+
+section "🛠 Generate MT5 runtime"
+
+write_container_start
+
+echo "Runtime script:"
+echo "${CONTAINER_START}"
+
+echo
+echo "Syntax check:"
+
+bash -n "${CONTAINER_START}"
+
+echo "✅ Container startup script is syntactically valid."
+
+
+# ==============================================================
+# Remove stale container
+# ==============================================================
+
+docker rm -f \
+  "${CONTAINER_NAME}" \
+  >/dev/null 2>&1 \
+  || true
+
+
+# ==============================================================
+# Pull upstream image
+# ==============================================================
+
+section "📦 Pull MT5 image"
+
+log "Image: ${MT5_IMAGE}"
 
 docker pull \
   "${MT5_IMAGE}"
 
 
-log "✅ MT5 image pulled successfully."
-
-
-# ============================================================
-# Image Information
-# ============================================================
-
-section "🔍 Docker image information"
-
-
 docker image inspect \
   "${MT5_IMAGE}" \
   --format \
-  'Repository={{index .RepoTags 0}} | ID={{.Id}} | Size={{.Size}} bytes'
+  'Image={{.RepoTags}} ID={{.Id}} Size={{.Size}}' \
+  | tee "${LOG_DIR}/image.txt"
 
 
-# ============================================================
-# Start Container
-# ============================================================
+# ==============================================================
+# Start container
+# ==============================================================
 
-section "🚀 Start MetaTrader 5 container"
-
-
-log "Starting Docker container..."
-
+section "🐳 Start container"
 
 docker run \
   --detach \
   --name "${CONTAINER_NAME}" \
   --shm-size=2g \
-  --stop-timeout 15 \
+  --stop-timeout 20 \
+  --label "app=mt5-cloud" \
   --label "managed-by=github-actions" \
-  --label "project=mt5-cloud-desktop" \
-  --label "run-id=${GITHUB_RUN_ID:-local}" \
-  --env "CUSTOM_USER=${MT5_WEB_USER}" \
-  --env "PASSWORD=${MT5_WEB_PASSWORD}" \
+  --env "CUSTOM_USER=${WEB_USER}" \
+  --env "PASSWORD=${WEB_PASSWORD}" \
   --env "DISPLAY_RESOLUTION=${RESOLUTION}" \
-  --env "TZ=${TZ}" \
-  --volume "${MT5_DATA_DIR}:/config" \
-  --publish "${MT5_WEB_BIND}:${MT5_WEB_PORT}:3000" \
-  --publish "${MT5_API_BIND}:${MT5_API_PORT}:8001" \
+  --env "TZ=UTC" \
+  --env "MT5_SERVER_PORT=${API_PORT}" \
+  --volume "${DATA_DIR}:/config" \
+  --volume "${CONTAINER_START}:/Metatrader/start.sh:ro" \
+  --publish "${WEB_BIND}:${WEB_PORT}:3000" \
+  --publish "${API_BIND}:${API_PORT}:8001" \
   "${MT5_IMAGE}"
 
 
-log "✅ Container started."
+# ==============================================================
+# Container info
+# ==============================================================
+
+docker ps \
+  --filter "name=${CONTAINER_NAME}" \
+  --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 
 
-# ============================================================
-# Container Verification
-# ============================================================
+echo
 
-section "🔍 Verify MT5 container"
-
-
-CONTAINER_PID="$(
-  docker inspect \
-    --format '{{.State.Pid}}' \
-    "${CONTAINER_NAME}"
-)"
+docker inspect \
+  "${CONTAINER_NAME}" \
+  --format 'Running={{.State.Running}} PID={{.State.Pid}}'
 
 
-CONTAINER_STATUS="$(
-  docker inspect \
-    --format '{{.State.Status}}' \
-    "${CONTAINER_NAME}"
-)"
+# ==============================================================
+# Wait for KasmVNC TCP
+# ==============================================================
 
+section "⏳ KasmVNC readiness"
 
-CONTAINER_RUNNING="$(
-  docker inspect \
-    --format '{{.State.Running}}' \
-    "${CONTAINER_NAME}"
-)"
+log "Waiting for 127.0.0.1:${WEB_PORT} ..."
 
+if ! wait_for_tcp \
+  127.0.0.1 \
+  "${WEB_PORT}" \
+  "${TCP_TIMEOUT}"; then
 
-log "Container PID : ${CONTAINER_PID}"
+  docker logs \
+    --tail 300 \
+    "${CONTAINER_NAME}" \
+    || true
 
-log "Status        : ${CONTAINER_STATUS}"
-
-log "Running       : ${CONTAINER_RUNNING}"
-
-
-if [[ "${CONTAINER_RUNNING}" != "true" ]]; then
-
-  show_container_logs
-
-  die "MT5 container failed to start."
+  die "KasmVNC TCP port ${WEB_PORT} did not become ready."
 
 fi
 
 
-# ============================================================
-# TCP Health Check
-# ============================================================
+log "✅ KasmVNC TCP is ready."
 
-wait_for_tcp() {
 
-  local host="$1"
+# ==============================================================
+# Wait for mt5linux TCP
+# ==============================================================
 
-  local port="$2"
+section "🐍 mt5linux readiness"
 
-  local timeout="$3"
+log "Waiting for 127.0.0.1:${API_PORT} ..."
 
-  local description="$4"
+if ! wait_for_tcp \
+  127.0.0.1 \
+  "${API_PORT}" \
+  "${TCP_TIMEOUT}"; then
 
-  local start_time
+  docker logs \
+    --tail 500 \
+    "${CONTAINER_NAME}" \
+    || true
 
-  local current_time
+  die "mt5linux TCP port ${API_PORT} did not become ready."
 
-  local elapsed
+fi
 
 
-  start_time="$(date +%s)"
+log "✅ mt5linux TCP is ready."
 
 
-  log "Waiting for ${description} at ${host}:${port}..."
+# ==============================================================
+# KasmVNC HTTP readiness
+# ==============================================================
 
+section "🌐 KasmVNC HTTP"
 
-  while true; do
+if ! wait_for_http \
+  "http://127.0.0.1:${WEB_PORT}/" \
+  "${HTTP_TIMEOUT}"; then
 
+  docker logs \
+    --tail 500 \
+    "${CONTAINER_NAME}" \
+    || true
 
-    if nc \
-      -z \
-      -w 2 \
-      "${host}" \
-      "${port}" \
-      >/dev/null \
-      2>&1; then
+  die "KasmVNC HTTP service did not become ready."
 
-      log "✅ ${description} TCP port is ready."
+fi
 
-      return 0
 
-    fi
+log "✅ KasmVNC HTTP service is ready."
 
 
-    if ! container_running; then
+# ==============================================================
+# HTTP headers
+# ==============================================================
 
-      echo
-
-      echo "❌ Container stopped while waiting for ${description}."
-
-      show_container_logs
-
-      return 1
-
-    fi
-
-
-    current_time="$(date +%s)"
-
-    elapsed=$((current_time - start_time))
-
-
-    if (( elapsed >= timeout )); then
-
-      echo
-
-      echo "❌ TCP timeout for ${description}."
-
-      show_container_logs
-
-      return 1
-
-    fi
-
-
-    log "⏳ ${description} not ready yet: ${elapsed}s/${timeout}s"
-
-
-    sleep "${HEALTH_INTERVAL_SECONDS}"
-
-  done
-
-}
-
-
-# ============================================================
-# KasmVNC TCP
-# ============================================================
-
-section "⏳ TCP readiness — KasmVNC :3000"
-
-
-wait_for_tcp \
-  "${MT5_WEB_BIND}" \
-  "${MT5_WEB_PORT}" \
-  "${TCP_TIMEOUT_SECONDS}" \
-  "KasmVNC"
-
-
-# ============================================================
-# mt5linux TCP
-# ============================================================
-
-section "⏳ TCP readiness — mt5linux/RPyC :8001"
-
-
-wait_for_tcp \
-  "${MT5_API_BIND}" \
-  "${MT5_API_PORT}" \
-  "${TCP_TIMEOUT_SECONDS}" \
-  "mt5linux/RPyC"
-
-
-# ============================================================
-# HTTP Probe
-# ============================================================
-
-http_probe() {
-
-  local url="$1"
-
-  local error_file="$2"
-
-  local code=""
-
-  local rc=0
-
-
-  : > "${error_file}"
-
-
-  if code="$(
-    curl \
-      --silent \
-      --show-error \
-      --output /dev/null \
-      --write-out '%{http_code}' \
-      --connect-timeout 5 \
-      --max-time 15 \
-      "${url}" \
-      2>"${error_file}"
-  )"; then
-
-    rc=0
-
-  else
-
-    rc=$?
-
-  fi
-
-
-  if (( rc != 0 )); then
-
-    echo "curl_exit=${rc}"
-
-    echo "http_code=${code:-000}"
-
-
-    if [[ -s "${error_file}" ]]; then
-
-      echo "curl_error:"
-
-      cat "${error_file}"
-
-    fi
-
-
-    return 1
-
-  fi
-
-
-  echo "http_code=${code}"
-
-
-  # KasmVNC may return:
-  #
-  # 200 = success
-  # 3xx = redirect
-  # 401 = authentication required
-  # 403 = forbidden/auth layer
-  #
-  # All of these prove the HTTP service is alive.
-
-
-  if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
-
-    return 0
-
-  fi
-
-
-  if [[ "${code}" =~ ^3[0-9][0-9]$ ]]; then
-
-    return 0
-
-  fi
-
-
-  if [[ "${code}" == "401" ]]; then
-
-    return 0
-
-  fi
-
-
-  if [[ "${code}" == "403" ]]; then
-
-    return 0
-
-  fi
-
-
-  return 1
-
-}
-
-
-# ============================================================
-# HTTP Readiness
-# ============================================================
-
-wait_for_http() {
-
-  local url="$1"
-
-  local timeout="$2"
-
-  local description="$3"
-
-  local error_file="${LOG_DIR}/http-health-error.txt"
-
-  local start_time
-
-  local current_time
-
-  local elapsed
-
-  local attempt=0
-
-
-  start_time="$(date +%s)"
-
-
-  log "Waiting for ${description} HTTP service..."
-
-  log "URL: ${url}"
-
-
-  while true; do
-
-    attempt=$((attempt + 1))
-
-
-    # --------------------------------------------------------
-    # IMPORTANT
-    #
-    # Do NOT call:
-    #
-    #   http_probe ...
-    #
-    # directly under `set -e`.
-    #
-    # The if statement intentionally absorbs exit code 1
-    # while the service is still starting.
-    # --------------------------------------------------------
-
-    if http_probe \
-      "${url}" \
-      "${error_file}"; then
-
-      log "✅ ${description} HTTP service is ready."
-
-      return 0
-
-    fi
-
-
-    if ! container_running; then
-
-      echo
-
-      echo "❌ Container stopped during HTTP readiness."
-
-      show_container_logs
-
-      return 1
-
-    fi
-
-
-    current_time="$(date +%s)"
-
-    elapsed=$((current_time - start_time))
-
-
-    if (( elapsed >= timeout )); then
-
-      echo
-
-      echo "❌ HTTP readiness timeout."
-
-      echo "Description : ${description}"
-
-      echo "URL         : ${url}"
-
-      echo "Attempts    : ${attempt}"
-
-      echo "Elapsed     : ${elapsed}s"
-
-
-      echo
-
-      echo "Last curl diagnostics:"
-
-
-      if [[ -s "${error_file}" ]]; then
-
-        cat "${error_file}"
-
-      else
-
-        echo "No curl error."
-
-      fi
-
-
-      show_container_logs
-
-      return 1
-
-    fi
-
-
-    log "⏳ HTTP not ready: attempt=${attempt}, elapsed=${elapsed}s/${timeout}s"
-
-
-    if [[ -s "${error_file}" ]]; then
-
-      tail -n 2 \
-        "${error_file}" \
-        2>/dev/null \
-        || true
-
-    fi
-
-
-    sleep "${HEALTH_INTERVAL_SECONDS}"
-
-  done
-
-}
-
-
-# ============================================================
-# KasmVNC HTTP
-# ============================================================
-
-section "❤️ HTTP readiness — KasmVNC"
-
-
-wait_for_http \
-  "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}/" \
-  "${HTTP_TIMEOUT_SECONDS}" \
-  "KasmVNC"
-
-
-# ============================================================
-# KasmVNC Header Diagnostics
-# ============================================================
-
-section "🔬 KasmVNC HTTP diagnostics"
-
+echo
+echo "KasmVNC response headers:"
 
 curl \
   --silent \
@@ -1256,133 +1159,79 @@ curl \
   --head \
   --connect-timeout 5 \
   --max-time 15 \
-  "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}/" \
-  2>&1 \
+  "http://127.0.0.1:${WEB_PORT}/" \
   | head -n 30 \
   || true
 
 
-# ============================================================
-# Cloudflare Tunnel
-# ============================================================
+# ==============================================================
+# Cloudflare Quick Tunnel
+# ==============================================================
 
-start_cloudflare() {
+TUNNEL_URL=""
 
-  section "☁️ Start Cloudflare Quick Tunnel"
+if [[ "${ENABLE_TUNNEL}" == "true" ]]; then
 
+  section "☁️ Cloudflare Quick Tunnel"
 
-  rm -f "${CLOUDFLARE_LOG}"
+  : >"${CLOUDFLARE_LOG}"
 
-  touch "${CLOUDFLARE_LOG}"
-
-
-  log "Starting Cloudflare..."
+  rm -f "${TUNNEL_URL_FILE}"
 
 
-  cloudflared tunnel \
+  log "Starting Quick Tunnel..."
+
+  "${CLOUDFLARED_BIN}" \
+    tunnel \
     --no-autoupdate \
-    --url "http://${MT5_WEB_BIND}:${MT5_WEB_PORT}" \
-    > "${CLOUDFLARE_LOG}" \
+    --url "http://${WEB_BIND}:${WEB_PORT}" \
+    >"${CLOUDFLARE_LOG}" \
     2>&1 &
 
 
-  CLOUDFLARED_PID="$!"
+  CLOUDFLARE_PID=$!
 
 
-  log "cloudflared PID: ${CLOUDFLARED_PID}"
-
-
-  local start_time
-
-  local current_time
-
-  local elapsed
-
-  local tunnel_url=""
-
-
-  start_time="$(date +%s)"
+  tunnel_started="$(date +%s)"
 
 
   while true; do
 
+    if grep \
+      -Eo \
+      'https://[-a-z0-9]+\.trycloudflare\.com' \
+      "${CLOUDFLARE_LOG}" \
+      | tail -n 1 \
+      >"${TUNNEL_URL_FILE}"; then
 
-    if ! kill -0 \
-      "${CLOUDFLARED_PID}" \
-      2>/dev/null; then
-
-      echo
-
-      echo "❌ cloudflared stopped unexpectedly."
-
-      echo
-
-      cat "${CLOUDFLARE_LOG}" \
-        2>/dev/null \
-        || true
-
-      return 1
-
-    fi
+      TUNNEL_URL="$(
+        tr -d '\r\n' <"${TUNNEL_URL_FILE}"
+      )"
 
 
-    tunnel_url="$(
-      grep \
-        -Eo \
-        'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
-        "${CLOUDFLARE_LOG}" \
-        2>/dev/null \
-        | head -n 1 \
-        || true
-    )"
-
-
-    if [[ -n "${tunnel_url}" ]]; then
-
-      printf '%s\n' \
-        "${tunnel_url}" \
-        > "${TUNNEL_URL_FILE}"
-
-
-      log "🌐 Cloudflare URL:"
-
-      echo
-
-      echo "${tunnel_url}"
-
-      echo
-
-
-      break
+      if [[ -n "${TUNNEL_URL}" ]]; then
+        break
+      fi
 
     fi
 
 
-    current_time="$(date +%s)"
+    if ! kill -0 "${CLOUDFLARE_PID}" 2>/dev/null; then
 
-    elapsed=$((current_time - start_time))
+      cat "${CLOUDFLARE_LOG}" || true
 
-
-    if (( elapsed >= TUNNEL_TIMEOUT_SECONDS )); then
-
-      echo
-
-      echo "❌ Cloudflare URL detection timeout."
-
-      echo
-
-      echo "Cloudflare log:"
-
-      cat "${CLOUDFLARE_LOG}" \
-        2>/dev/null \
-        || true
-
-      return 1
+      die "Cloudflare tunnel exited unexpectedly."
 
     fi
 
 
-    log "⏳ Waiting for Cloudflare URL: ${elapsed}s/${TUNNEL_TIMEOUT_SECONDS}s"
+    if (( $(date +%s) - tunnel_started >= TUNNEL_TIMEOUT )); then
+
+      cat "${CLOUDFLARE_LOG}" || true
+
+      die "Cloudflare tunnel URL was not detected within ${TUNNEL_TIMEOUT}s."
+
+    fi
 
 
     sleep 2
@@ -1390,352 +1239,225 @@ start_cloudflare() {
   done
 
 
-  # ----------------------------------------------------------
-  # Public health
-  # ----------------------------------------------------------
-
-  section "🌍 Public Cloudflare health"
+  log "✅ Tunnel URL detected:"
+  echo "${TUNNEL_URL}"
 
 
-  local public_start
+  # ------------------------------------------------------------
+  # Public URL readiness
+  # ------------------------------------------------------------
 
-  local public_now
+  section "🌍 Public URL check"
 
-  local public_elapsed
-
-  local public_code
-
-  local public_rc
-
-
-  public_start="$(date +%s)"
+  public_code="000"
+  public_rc=1
 
 
-  while true; do
+  for _ in $(seq 1 10); do
 
-
-    public_code="$(
+    if public_code="$(
       curl \
         --silent \
         --show-error \
         --output /dev/null \
         --write-out '%{http_code}' \
         --connect-timeout 5 \
-        --max-time "${PUBLIC_HTTP_TIMEOUT_SECONDS}" \
-        "${tunnel_url}/" \
-        2>/dev/null
-    )"
+        --max-time 20 \
+        "${TUNNEL_URL}/"
+    )"; then
 
-    public_rc=$?
-
-
-    if (( public_rc == 0 )); then
-
-      log "Public HTTP status: ${public_code}"
-
-
-      if [[ "${public_code}" =~ ^2[0-9][0-9]$ ]]; then
-
-        log "✅ Cloudflare public endpoint is reachable."
-
-        break
-
-      fi
-
-
-      if [[ "${public_code}" =~ ^3[0-9][0-9]$ ]]; then
-
-        log "✅ Cloudflare public endpoint is reachable."
-
-        break
-
-      fi
-
-
-      if [[ "${public_code}" == "401" ]]; then
-
-        log "✅ Cloudflare endpoint reached KasmVNC authentication."
-
-        break
-
-      fi
-
-
-      if [[ "${public_code}" == "403" ]]; then
-
-        log "✅ Cloudflare endpoint reached the server."
-
-        break
-
-      fi
+      public_rc=0
 
     else
 
-      log "⏳ Public HTTP connection failed. curl=${public_rc}"
+      public_rc=$?
+
+      public_code="000"
 
     fi
 
 
-    public_now="$(date +%s)"
+    if [[ "${public_code}" =~ ^2[0-9][0-9]$|^3[0-9][0-9]$|^401$|^403$ ]]; then
 
-    public_elapsed=$((public_now - public_start))
-
-
-    if (( public_elapsed >= TUNNEL_TIMEOUT_SECONDS )); then
-
-      echo
-
-      echo "⚠️ Cloudflare URL exists but public health check timed out."
-
-      echo "URL: ${tunnel_url}"
-
-      echo
-
-      echo "Continuing because the tunnel process is alive."
+      log "✅ Public tunnel reachable: HTTP ${public_code}"
 
       break
 
     fi
 
 
-    sleep "${HEALTH_INTERVAL_SECONDS}"
+    log \
+      "Public probe: HTTP ${public_code}, curl_rc ${public_rc}; retrying..."
+
+    sleep 3
 
   done
 
-}
-
-
-if [[ "${ENABLE_TUNNEL,,}" == "true" ]]; then
-
-  start_cloudflare
-
-fi
-
-
-# ============================================================
-# Connection Information
-# ============================================================
-
-section "🔗 CONNECTION INFORMATION"
-
-
-echo
-
-echo "╔════════════════════════════════════════════════════════════╗"
-
-echo "║                  🚀 MT5 CLOUD DESKTOP                      ║"
-
-echo "╠════════════════════════════════════════════════════════════╣"
-
-echo "║                                                            ║"
-
-echo "║ Username : ${MT5_WEB_USER}"
-
-echo "║ Password : ${MT5_WEB_PASSWORD}"
-
-echo "║                                                            ║"
-
-
-if [[ -s "${TUNNEL_URL_FILE}" ]]; then
-
-  TUNNEL_URL="$(cat "${TUNNEL_URL_FILE}")"
-
-  echo "║ Browser  : ${TUNNEL_URL}"
-
 else
 
-  echo "║ Browser  : http://${MT5_WEB_BIND}:${MT5_WEB_PORT}"
+  log "Cloudflare tunnel disabled."
 
 fi
 
 
-echo "║                                                            ║"
+# ==============================================================
+# Connection information
+# ==============================================================
 
-echo "║ RPyC     : ${MT5_API_BIND}:${MT5_API_PORT}"
+section "✅ Connection"
 
-echo "║                                                            ║"
+BROWSER_URL="${TUNNEL_URL:-http://127.0.0.1:${WEB_PORT}}"
 
-echo "╚════════════════════════════════════════════════════════════╝"
+
+echo "Browser URL : ${BROWSER_URL}"
+echo "Username    : ${WEB_USER}"
+echo "Password    : ${WEB_PASSWORD}"
+echo "Resolution  : ${RESOLUTION}"
+echo "Session     : ${SESSION_MINUTES} minutes"
+echo "MT5 API     : private ${API_BIND}:${API_PORT}"
+echo "MT5 Data    : ${DATA_DIR}"
+
+
+# ==============================================================
+# Save connection information
+#
+# This is intentionally local to the workflow artifact.
+# The password is the demo web-desktop password only.
+# ==============================================================
+
+cat >"${LOG_DIR}/connection.txt" <<EOF
+Browser URL : ${BROWSER_URL}
+Username    : ${WEB_USER}
+Password    : ${WEB_PASSWORD}
+Resolution  : ${RESOLUTION}
+Session     : ${SESSION_MINUTES} minutes
+MT5 API     : ${API_BIND}:${API_PORT}
+MT5 Image   : ${MT5_IMAGE}
+EOF
+
+
+# ==============================================================
+# Python test/client instructions
+# ==============================================================
+
+cat >"${LOG_DIR}/python-client.txt" <<'EOF'
+# Install client:
+
+python3 -m pip install mt5linux
+
+# Connect from Python running INSIDE the MT5 desktop/container:
+
+from mt5linux import MetaTrader5
+
+mt5 = MetaTrader5(
+    host="127.0.0.1",
+    port=8001,
+)
+
+print("Version:", mt5.version())
+print("Terminal:", mt5.terminal_info())
+
+mt5.shutdown()
+EOF
+
 
 echo
+echo "Python client example:"
+echo "----------------------------------------"
+cat "${LOG_DIR}/python-client.txt"
+echo "----------------------------------------"
 
 
-# ============================================================
+# ==============================================================
 # GitHub Step Summary
-# ============================================================
+# ==============================================================
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 
-
   {
-
     echo "# 🚀 MT5 Cloud Desktop"
-
     echo
 
     echo "| Setting | Value |"
-
     echo "|---|---|"
-
-    echo "| Resolution | \`${RESOLUTION}\` |"
-
-    echo "| Session | \`${SESSION_MINUTES} minutes\` |"
-
-    echo "| Docker Image | \`${MT5_IMAGE}\` |"
-
-    echo "| Container | \`${CONTAINER_NAME}\` |"
-
-    echo "| KasmVNC | \`${MT5_WEB_BIND}:${MT5_WEB_PORT}\` |"
-
-    echo "| mt5linux/RPyC | \`${MT5_API_BIND}:${MT5_API_PORT}\` |"
-
-    echo "| Cloudflare | \`${ENABLE_TUNNEL}\` |"
+    echo "| Image | \`${MT5_IMAGE}\` |"
+    echo "| Resolution | ${RESOLUTION} |"
+    echo "| Session | ${SESSION_MINUTES} min |"
+    echo "| Browser | ${BROWSER_URL} |"
+    echo "| User | \`${WEB_USER}\` |"
+    echo "| API | private \`${API_BIND}:${API_PORT}\` |"
+    echo "| Cloudflare | ${ENABLE_TUNNEL} |"
 
     echo
 
-    echo "## 🔗 Connection"
+    echo "### Connection"
 
     echo
+    echo "Open the Browser URL from the job log and use the displayed demo password."
 
-
-    if [[ -s "${TUNNEL_URL_FILE}" ]]; then
-
-      TUNNEL_URL="$(cat "${TUNNEL_URL_FILE}")"
-
-      echo "**Browser:**"
-
-      echo
-
-      echo "${TUNNEL_URL}"
-
-      echo
-
-      echo "**Username:** \`${MT5_WEB_USER}\`"
-
-      echo
-
-      echo "**Password:** \`${MT5_WEB_PASSWORD}\`"
-
-    else
-
-      echo "Cloudflare Tunnel is disabled."
-
-    fi
-
-
-    echo
-
-    echo "## ❤️ Health"
-
-    echo
-
-    echo "- Docker container: **READY**"
-
-    echo "- KasmVNC TCP :3000: **READY**"
-
-    echo "- mt5linux/RPyC TCP :8001: **READY**"
-
-    echo "- KasmVNC HTTP: **READY**"
-
-    echo
-
-    echo "## 🔐 Network"
-
-    echo
-
-    echo "Only KasmVNC :3000 is exposed through Cloudflare."
-
-    echo
-
-    echo "mt5linux/RPyC :8001 remains bound to localhost."
-
-  } >> "${GITHUB_STEP_SUMMARY}"
+  } >>"${GITHUB_STEP_SUMMARY}"
 
 fi
 
 
-# ============================================================
-# Session Timer
-# ============================================================
+# ==============================================================
+# Session monitor
+# ==============================================================
 
-section "⏱️ MT5 SESSION"
+section "⏱ Session monitor"
 
+START_TIME="$(date +%s)"
 
-SESSION_SECONDS=$((SESSION_MINUTES * 60))
+END_TIME=$(
+  (
+    START_TIME + SESSION_MINUTES * 60
+  )
+)
 
-
-START_TIME_UNIX="$(date +%s)"
-
-END_TIME_UNIX=$((START_TIME_UNIX + SESSION_SECONDS))
-
-
-log "Session started: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-
-log "Duration       : ${SESSION_MINUTES} minutes"
-
-log "End time       : $(date -u -d "@${END_TIME_UNIX}" '+%Y-%m-%d %H:%M:%S UTC')"
-
-
-# ============================================================
-# Monitor
-# ============================================================
 
 while true; do
 
+  NOW="$(date +%s)"
 
-  NOW_UNIX="$(date +%s)"
+  REMAINING=$(
+    (
+      END_TIME - NOW
+    )
+  )
 
 
-  if (( NOW_UNIX >= END_TIME_UNIX )); then
-
-    log "⏰ Session duration reached."
-
+  if (( REMAINING <= 0 )); then
     break
+  fi
+
+
+  # ------------------------------------------------------------
+  # Container must stay alive
+  # ------------------------------------------------------------
+
+  if ! docker inspect \
+    -f '{{.State.Running}}' \
+    "${CONTAINER_NAME}" \
+    2>/dev/null \
+    | grep -qx true; then
+
+    section "❌ MT5 container stopped unexpectedly"
+
+    docker logs \
+      --tail 1000 \
+      "${CONTAINER_NAME}" \
+      || true
+
+    die "MT5 container stopped before session ended."
 
   fi
 
 
-  # ----------------------------------------------------------
-  # Container must remain alive
-  # ----------------------------------------------------------
-
-  if ! container_running; then
-
-    echo
-
-    echo "❌ MT5 container stopped unexpectedly."
-
-    show_container_logs
-
-    exit 1
-
-  fi
-
-
-  # ----------------------------------------------------------
-  # Remaining time
-  # ----------------------------------------------------------
-
-  REMAINING_SECONDS=$((END_TIME_UNIX - NOW_UNIX))
-
-  REMAINING_MINUTES=$((REMAINING_SECONDS / 60))
-
-  REMAINING_ONLY_SECONDS=$((REMAINING_SECONDS % 60))
-
-
-  echo
-
-  echo "------------------------------------------------------------"
-
-  echo "[$(timestamp)] MT5 SESSION"
-
-  echo "------------------------------------------------------------"
-
-  echo "Container : RUNNING"
-
-  echo "Remaining : ${REMAINING_MINUTES}m ${REMAINING_ONLY_SECONDS}s"
-
-  echo "------------------------------------------------------------"
+  printf \
+    '[%s] Remaining: %02dh %02dm\n' \
+    "$(timestamp)" \
+    $(( REMAINING / 3600 )) \
+    $(( (REMAINING % 3600) / 60 ))
 
 
   sleep 30
@@ -1743,193 +1465,66 @@ while true; do
 done
 
 
-# ============================================================
-# Final Diagnostics
-# ============================================================
+# ==============================================================
+# Final diagnostics
+# ==============================================================
 
 section "📊 Final diagnostics"
 
+if [[ "${SAVE_ARTIFACTS}" == "true" ]]; then
 
-echo "Container state:"
-
-docker inspect \
-  --format \
-  'Running={{.State.Running}} | Status={{.State.Status}} | ExitCode={{.State.ExitCode}} | Started={{.State.StartedAt}}' \
-  "${CONTAINER_NAME}" \
-  2>/dev/null \
-  || true
-
-
-echo
-
-echo "Docker stats:"
-
-docker stats \
-  --no-stream \
-  --format \
-  'CPU={{.CPUPerc}} | MEM={{.MemUsage}} ({{.MemPerc}}) | NET={{.NetIO}} | BLOCK={{.BlockIO}}' \
-  "${CONTAINER_NAME}" \
-  2>/dev/null \
-  || true
+  docker logs \
+    --tail 2000 \
+    "${CONTAINER_NAME}" \
+    >"${LOG_DIR}/container.log" \
+    2>&1 \
+    || true
 
 
-echo
-
-echo "Listening ports:"
-
-ss -lntp \
-  2>/dev/null \
-  | grep \
-    -E ":(${MT5_WEB_PORT}|${MT5_API_PORT})" \
-  || true
+  docker inspect \
+    "${CONTAINER_NAME}" \
+    >"${LOG_DIR}/container-inspect.json" \
+    2>&1 \
+    || true
 
 
-echo
-
-echo "Container processes:"
-
-docker top \
-  "${CONTAINER_NAME}" \
-  2>/dev/null \
-  || true
+  docker stats \
+    --no-stream \
+    "${CONTAINER_NAME}" \
+    >"${LOG_DIR}/container-stats.txt" \
+    2>&1 \
+    || true
 
 
-# ============================================================
-# Save Diagnostics
-# ============================================================
-
-if [[ "${SAVE_ARTIFACTS,,}" == "true" ]]; then
-
-
-  section "📦 Save diagnostics"
+  df -h \
+    >"${LOG_DIR}/disk.txt" \
+    2>&1 \
+    || true
 
 
-  {
-
-    echo "MT5 Cloud Desktop Diagnostics"
-
-    echo "=============================="
-
-    echo
-
-    echo "Timestamp: $(timestamp)"
-
-    echo "GitHub Run ID: ${GITHUB_RUN_ID:-local}"
-
-    echo "Image: ${MT5_IMAGE}"
-
-    echo "Container: ${CONTAINER_NAME}"
-
-    echo "Resolution: ${RESOLUTION}"
-
-    echo "Session: ${SESSION_MINUTES} minutes"
-
-    echo
-
-    echo "Architecture:"
-
-    uname -m
-
-    echo
-
-    echo "Kernel:"
-
-    uname -a
-
-    echo
-
-    echo "Docker:"
-
-    docker --version
-
-    echo
-
-    echo "Memory:"
-
-    free -h
-
-    echo
-
-    echo "Disk:"
-
-    df -h /
-
-    echo
-
-    echo "Container inspect:"
-
-    docker inspect \
-      "${CONTAINER_NAME}" \
-      2>&1 \
-      || true
-
-    echo
-
-    echo "Container logs:"
-
-    docker logs \
-      --tail 1000 \
-      "${CONTAINER_NAME}" \
-      2>&1 \
-      || true
-
-  } > "${LOG_DIR}/diagnostics.txt"
+  free -h \
+    >"${LOG_DIR}/memory.txt" \
+    2>&1 \
+    || true
 
 
-  if [[ -s "${CLOUDFLARE_LOG}" ]]; then
-
-    cp \
-      "${CLOUDFLARE_LOG}" \
-      "${LOG_DIR}/cloudflared.log"
-
-  fi
-
-
-  if [[ -s "${TUNNEL_URL_FILE}" ]]; then
-
-    cp \
-      "${TUNNEL_URL_FILE}" \
-      "${LOG_DIR}/tunnel_url.txt"
-
-  fi
-
-
-  log "✅ Diagnostics saved."
+  ps auxww \
+    >"${LOG_DIR}/processes.txt" \
+    2>&1 \
+    || true
 
 fi
 
 
-# ============================================================
+# ==============================================================
 # Success
-# ============================================================
+# ==============================================================
 
-section "✅ MT5 SESSION COMPLETED"
+section "🏁 Session complete"
 
-
-echo "MetaTrader 5 session completed normally."
-
+echo "✅ MT5 Cloud Desktop session completed successfully."
 echo
-
-echo "Resolution : ${RESOLUTION}"
-
-echo "Duration   : ${SESSION_MINUTES} minutes"
-
-
-if [[ -s "${TUNNEL_URL_FILE}" ]]; then
-
-  echo
-
-  echo "🌐 Browser URL:"
-
-  cat "${TUNNEL_URL_FILE}"
-
-fi
-
-
-echo
-
-echo "Cleanup will now stop the temporary session."
-
-echo
-
-echo "✅ Done."
+echo "Browser : ${BROWSER_URL}"
+echo "User    : ${WEB_USER}"
+echo "API     : private ${API_BIND}:${API_PORT}"
+echo "Runtime : ${SESSION_MINUTES} minutes"
