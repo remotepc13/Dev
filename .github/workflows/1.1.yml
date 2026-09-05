@@ -437,8 +437,6 @@ jobs:
 
           mkdir -p "$HOME/.vnc"
 
-          WIDTH="${{ inputs.resolution%x* }}"
-          HEIGHT="${{ inputs.resolution#*x }}"
 
           cat > "$HOME/.vnc/kasmvnc.yaml" <<EOF
           desktop:
