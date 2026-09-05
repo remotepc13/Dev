@@ -3,8 +3,9 @@ name: "🖥️ Linux Desktop"
 on:
   workflow_dispatch:
     inputs:
+
       workspace_name:
-        description: "📝 Name shown in the desktop session"
+        description: "📝 Desktop workspace name"
         required: false
         type: string
         default: "workspace"
@@ -32,26 +33,51 @@ on:
           - "1600x900"
           - "1920x1080"
 
+
 jobs:
+
   desktop:
+
     name: "🖥️ Linux Desktop"
+
     runs-on: ubuntu-24.04
 
-    # GitHub-hosted runner maximums can vary by plan.
-    # 360 minutes is the maximum requested by this workflow.
     timeout-minutes: 360
 
     env:
+
+      # ----------------------------------------------------------
+      # 🔐 KasmVNC
+      # ----------------------------------------------------------
+
       KASMVNC_VERSION: "1.4.0"
+
       KASMVNC_PORT: "8444"
+
       DISPLAY_NUM: ":1"
-      DESKTOP_PASSWORD: "desktop"
+
+      # ----------------------------------------------------------
+      # 🔑 Desktop credentials
+      #
+      # IMPORTANT:
+      #
+      # Create a GitHub repository secret named:
+      #
+      # DESKTOP_PASSWORD
+      #
+      # If the secret does not exist, the workflow uses "desktop".
+      # ----------------------------------------------------------
+
+      DESKTOP_USER: "desktop"
+
+      DESKTOP_PASSWORD: ${{ secrets.DESKTOP_PASSWORD || 'desktop' }}
+
 
     steps:
 
-      # ============================================================
+      # ==========================================================
       # 📋 SYSTEM INFORMATION
-      # ============================================================
+      # ==========================================================
 
       - name: "📋 System information"
         shell: bash
@@ -60,12 +86,12 @@ jobs:
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║             🖥️  LINUX DESKTOP                     ║"
+          echo "║              🖥️  LINUX DESKTOP                     ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
 
-          echo "🐧 OS:"
-          cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID|VERSION_CODENAME)=' || true
+          echo "🐧 Operating system:"
+          cat /etc/os-release
 
           echo ""
           echo "🏗️ Architecture:"
@@ -76,12 +102,12 @@ jobs:
           uname -a
 
           echo ""
-          echo "💾 Disk:"
-          df -h / | tail -n 1
-
-          echo ""
           echo "🧠 Memory:"
           free -h
+
+          echo ""
+          echo "💾 Disk:"
+          df -h /
 
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -90,9 +116,10 @@ jobs:
           echo "🖥️ Resolution: ${{ inputs.resolution }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ============================================================
+
+      # ==========================================================
       # 🔍 VALIDATE INPUT
-      # ============================================================
+      # ==========================================================
 
       - name: "🔍 Validate configuration"
         shell: bash
@@ -106,7 +133,7 @@ jobs:
               ;;
             *)
               echo "❌ Invalid duration: $HOURS"
-              echo "ℹ️ Allowed duration: 1–6 hours"
+              echo "ℹ️ Allowed values: 1–6"
               exit 1
               ;;
           esac
@@ -118,24 +145,34 @@ jobs:
           echo "SESSION_SECONDS=$SESSION_SECONDS" >> "$GITHUB_ENV"
 
           echo ""
-          echo "✅ Configuration validated"
-          echo "⏱️ Session: ${HOURS} hour(s)"
-          echo "⏱️ Minutes: ${SESSION_MINUTES}"
-          echo "⏱️ Seconds: ${SESSION_SECONDS}"
+          echo "╔════════════════════════════════════════════════════╗"
+          echo "║              ⚙️ SESSION CONFIG                     ║"
+          echo "╚════════════════════════════════════════════════════╝"
+          echo ""
 
-      # ============================================================
-      # 📦 INSTALL XFCE
-      # ============================================================
+          echo "📝 Workspace : ${{ inputs.workspace_name }}"
+          echo "⏱️ Duration  : ${HOURS} hour(s)"
+          echo "⏱️ Minutes   : ${SESSION_MINUTES}"
+          echo "🖥️ Resolution: ${{ inputs.resolution }}"
+          echo ""
 
-      - name: "📦 Install XFCE desktop"
+          echo "✅ Configuration validated."
+
+
+      # ==========================================================
+      # 📦 INSTALL DESKTOP
+      # ==========================================================
+
+      - name: "📦 Install XFCE"
         shell: bash
         run: |
           set -euo pipefail
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║             📦 INSTALLING XFCE                     ║"
+          echo "║                📦 INSTALLING XFCE                  ║"
           echo "╚════════════════════════════════════════════════════╝"
+          echo ""
 
           sudo apt-get update
 
@@ -144,26 +181,27 @@ jobs:
             xfce4-terminal \
             dbus-x11 \
             dbus-user-session \
-            x11-xserver-utils \
             xauth \
+            x11-xserver-utils \
             xfonts-base \
             xfonts-75dpi \
             xfonts-100dpi \
             fonts-dejavu \
-            openssl \
             curl \
-            jq \
             ca-certificates \
+            openssl \
+            jq \
             procps \
-            net-tools \
-            iproute2
+            iproute2 \
+            net-tools
 
           echo ""
-          echo "✅ XFCE installation complete."
+          echo "✅ XFCE installed."
 
-      # ============================================================
+
+      # ==========================================================
       # 🔐 INSTALL KASMVNC
-      # ============================================================
+      # ==========================================================
 
       - name: "🔐 Install KasmVNC"
         shell: bash
@@ -172,37 +210,41 @@ jobs:
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║             🔐 INSTALLING KASMVNC                  ║"
+          echo "║              🔐 INSTALLING KASMVNC                 ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
 
           ARCH="$(dpkg --print-architecture)"
 
-          if [ "$ARCH" != "amd64" ]; then
-            echo "❌ Unsupported architecture: $ARCH"
-            echo "❌ This workflow expects an amd64 GitHub runner."
-            exit 1
-          fi
+          CODENAME="$(
+            . /etc/os-release
+            echo "${VERSION_CODENAME}"
+          )"
 
-          CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
+          echo "🐧 Ubuntu : $CODENAME"
+          echo "🏗️ Arch   : $ARCH"
+          echo "📦 KasmVNC: $KASMVNC_VERSION"
+          echo ""
 
           if [ "$CODENAME" != "noble" ]; then
-            echo "❌ Unsupported Ubuntu release: $CODENAME"
-            echo "❌ This workflow is pinned to Ubuntu 24.04 (noble)."
+            echo "❌ This workflow requires Ubuntu 24.04 / noble."
             exit 1
           fi
 
-          PACKAGE="kasmvncserver_${CODENAME}_${KASMVNC_VERSION}_${ARCH}.deb"
+          if [ "$ARCH" != "amd64" ]; then
+            echo "❌ This workflow requires amd64."
+            exit 1
+          fi
+
+          PACKAGE="kasmvncserver_noble_${KASMVNC_VERSION}_amd64.deb"
 
           URL="https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/${PACKAGE}"
 
-          echo "📦 Package : $PACKAGE"
-          echo "🔗 Source  : $URL"
+          echo "⬇️ Downloading:"
+          echo "$URL"
           echo ""
 
           cd /tmp
-
-          echo "⬇️ Downloading KasmVNC..."
 
           curl \
             --fail \
@@ -211,108 +253,135 @@ jobs:
             --retry 5 \
             --retry-delay 3 \
             --connect-timeout 15 \
-            --max-time 120 \
+            --max-time 180 \
             -o "$PACKAGE" \
             "$URL"
 
           echo ""
-          echo "📦 Installing KasmVNC..."
+          echo "📦 Installing package..."
 
           sudo apt-get install -y "./$PACKAGE"
+
+          echo ""
+          echo "🔎 Installed binaries:"
+          command -v vncserver
+          command -v vncpasswd
+          command -v Xvnc
 
           echo ""
           echo "🔎 KasmVNC version:"
           Xvnc -version || true
 
           echo ""
-          echo "🔎 vncserver:"
-          command -v vncserver
+          echo "✅ KasmVNC installed."
 
-          echo ""
-          echo "🔎 kasmvncpasswd:"
-          command -v kasmvncpasswd || true
 
-          echo ""
-          echo "🔎 KasmVNC web files:"
-          test -d /usr/share/kasmvnc/www
-          ls -la /usr/share/kasmvnc/www | head -20
+      # ==========================================================
+      # 🔒 CREATE SSL CERTIFICATE
+      # ==========================================================
 
-          echo ""
-          echo "✅ KasmVNC installed successfully."
-
-      # ============================================================
-      # 🔒 SSL CERTIFICATE
-      # ============================================================
-
-      - name: "🔒 Configure KasmVNC certificate"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo ""
-          echo "🔒 Preparing local KasmVNC certificate..."
-
-          mkdir -p "$HOME/.vnc"
-
-          openssl req \
-            -x509 \
-            -nodes \
-            -newkey rsa:2048 \
-            -days 2 \
-            -keyout "$HOME/.vnc/self.pem" \
-            -out "$HOME/.vnc/self.pem" \
-            -subj "/C=US/ST=GitHub/L=Actions/O=LinuxDesktop/OU=KasmVNC/CN=localhost" \
-            >/dev/null 2>&1
-
-          chmod 600 "$HOME/.vnc/self.pem"
-
-          echo "✅ Temporary certificate created."
-
-      # ============================================================
-      # 🔑 CREATE KASMVNC PASSWORD
-      # ============================================================
-
-      - name: "🔑 Configure desktop password"
+      - name: "🔒 Create local SSL certificate"
         shell: bash
         run: |
           set -euo pipefail
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║             🔑 DESKTOP AUTHENTICATION              ║"
+          echo "║               🔒 SSL CERTIFICATE                   ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
 
           mkdir -p "$HOME/.vnc"
 
+          CERT="$HOME/.vnc/self.pem"
+
+          rm -f "$CERT"
+
+          openssl req \
+            -x509 \
+            -nodes \
+            -newkey rsa:2048 \
+            -sha256 \
+            -days 2 \
+            -keyout "$CERT" \
+            -out "$CERT" \
+            -subj "/C=US/ST=GitHub/L=Actions/O=LinuxDesktop/OU=KasmVNC/CN=localhost" \
+            >/dev/null 2>&1
+
+          chmod 600 "$CERT"
+
+          echo "🔐 Certificate:"
+          echo "$CERT"
+
+          echo ""
+          echo "🔎 Certificate test:"
+
+          openssl x509 \
+            -in "$CERT" \
+            -noout \
+            -subject \
+            -issuer \
+            -dates
+
+          echo ""
+          echo "✅ SSL certificate ready."
+
+
+      # ==========================================================
+      # 🔑 CREATE KASMVNC USER
+      # ==========================================================
+
+      - name: "🔑 Configure KasmVNC authentication"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo ""
+          echo "╔════════════════════════════════════════════════════╗"
+          echo "║              🔑 KASMVNC AUTH                       ║"
+          echo "╚════════════════════════════════════════════════════╝"
+          echo ""
+
           rm -f "$HOME/.kasmpasswd"
 
-          if ! command -v kasmvncpasswd >/dev/null 2>&1; then
-            echo "❌ kasmvncpasswd was not installed."
-            exit 1
-          fi
+          echo "👤 Creating KasmVNC user:"
+          echo "   $DESKTOP_USER"
+          echo ""
+
+          # vncpasswd prompts for the password.
+          #
+          # -u = username
+          # -w = write/control permission
+          # -o = owner permission
+          #
+          # We intentionally do NOT use -o.
+          # The desktop user only needs control of the desktop.
 
           printf '%s\n%s\n' \
             "$DESKTOP_PASSWORD" \
             "$DESKTOP_PASSWORD" \
-            | kasmvncpasswd -u desktop -wo
+          | vncpasswd \
+              -u "$DESKTOP_USER" \
+              -w
 
           if [ ! -f "$HOME/.kasmpasswd" ]; then
-            echo "❌ KasmVNC password file was not created."
+            echo "❌ ~/.kasmpasswd was not created."
             exit 1
           fi
 
           chmod 600 "$HOME/.kasmpasswd"
 
-          echo "✅ KasmVNC password configured."
-          echo "👤 User: desktop"
+          echo ""
+          echo "✅ KasmVNC authentication configured."
+          echo "👤 Username: $DESKTOP_USER"
           echo "🔐 Password: configured"
           echo ""
-          echo "⚠️ The password is intentionally NOT printed."
+          echo "⚠️ Password is intentionally not printed."
 
-      # ============================================================
-      # 🖥️ XFCE STARTUP SCRIPT
-      # ============================================================
+
+      # ==========================================================
+      # 🖥️ CREATE XFCE STARTUP
+      # ==========================================================
 
       - name: "🖥️ Configure XFCE startup"
         shell: bash
@@ -333,49 +402,187 @@ jobs:
           export XDG_CURRENT_DESKTOP=XFCE
           export XDG_SESSION_DESKTOP=xfce
           export XDG_SESSION_TYPE=x11
+
           export XDG_CONFIG_DIRS="/etc/xdg/xdg-xfce:/etc/xdg:${XDG_CONFIG_DIRS:-}"
           export XDG_DATA_DIRS="/usr/share/xfce4:/usr/local/share:/usr/share:${XDG_DATA_DIRS:-}"
 
           # Disable screen blanking.
           xset s off || true
           xset -dpms || true
+          xset s noblank || true
 
-          # Start XFCE in its own DBus session.
+          # Start XFCE.
           exec dbus-run-session -- startxfce4
           EOF
 
           chmod +x "$HOME/.vnc/xstartup"
 
-          echo "✅ XFCE startup configured."
+          echo "✅ XFCE startup script created."
 
-      # ============================================================
-      # 🧹 CLEAN OLD VNC SESSIONS
-      # ============================================================
 
-      - name: "🧹 Clear old VNC sessions"
+      # ==========================================================
+      # ⚙️ CREATE EXPLICIT KASMVNC CONFIG
+      # ==========================================================
+
+      - name: "⚙️ Configure KasmVNC"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo ""
+          echo "╔════════════════════════════════════════════════════╗"
+          echo "║              ⚙️ KASMVNC CONFIG                     ║"
+          echo "╚════════════════════════════════════════════════════╝"
+          echo ""
+
+          mkdir -p "$HOME/.vnc"
+
+          WIDTH="${{ inputs.resolution%x* }}"
+          HEIGHT="${{ inputs.resolution#*x }}"
+
+          cat > "$HOME/.vnc/kasmvnc.yaml" <<EOF
+          desktop:
+            resolution:
+              width: ${WIDTH}
+              height: ${HEIGHT}
+            allow_resize: true
+            pixel_depth: 24
+            gpu:
+              hw3d: false
+
+          network:
+            protocol: http
+            interface: 127.0.0.1
+            websocket_port: ${KASMVNC_PORT}
+            use_ipv4: true
+            use_ipv6: false
+
+            udp:
+              public_ip: 127.0.0.1
+              port: auto
+              stun_server: none
+
+            ssl:
+              pem_certificate: ${HOME}/.vnc/self.pem
+              pem_key: ${HOME}/.vnc/self.pem
+              require_ssl: true
+
+          user_session:
+            new_session_disconnects_existing_exclusive_session: false
+            concurrent_connections_prompt: false
+            idle_timeout: never
+
+          server:
+            http:
+              httpd_directory: /usr/share/kasmvnc/www
+
+            advanced:
+              kasm_password_file: ${HOME}/.kasmpasswd
+              x_authority_file: ${HOME}/.Xauthority
+
+            auto_shutdown:
+              no_user_session_timeout: never
+              active_user_session_timeout: never
+              inactive_user_session_timeout: never
+
+          security:
+            brute_force_protection:
+              blacklist_threshold: 0
+              blacklist_timeout: 0
+
+          logging:
+            level: info
+
+          runtime_configuration:
+            allow_client_to_override_kasm_server_settings: false
+
+          encoding:
+            max_frame_rate: 60
+            video_encoding_mode:
+              max_resolution:
+                width: ${WIDTH}
+                height: ${HEIGHT}
+          EOF
+
+          echo "📄 Generated configuration:"
+          echo ""
+
+          cat "$HOME/.vnc/kasmvnc.yaml"
+
+          echo ""
+          echo "✅ KasmVNC configuration created."
+
+
+      # ==========================================================
+      # 🔎 CONFIG VALIDATION
+      # ==========================================================
+
+      - name: "🔎 Validate KasmVNC configuration"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo ""
+          echo "🔎 Validating KasmVNC configuration..."
+
+          test -f "$HOME/.vnc/kasmvnc.yaml"
+          test -f "$HOME/.vnc/self.pem"
+          test -f "$HOME/.kasmpasswd"
+          test -x "$HOME/.vnc/xstartup"
+
+          echo "✅ Config file exists."
+          echo "✅ SSL certificate exists."
+          echo "✅ Password database exists."
+          echo "✅ XFCE startup exists."
+
+          echo ""
+          echo "🔎 KasmVNC dry-run:"
+
+          vncserver \
+            "$DISPLAY_NUM" \
+            -geometry "${{ inputs.resolution }}" \
+            -depth 24 \
+            -websocketPort "$KASMVNC_PORT" \
+            -httpd /usr/share/kasmvnc/www \
+            -sslOnly \
+            -interface 127.0.0.1 \
+            -cert "$HOME/.vnc/self.pem" \
+            -key "$HOME/.vnc/self.pem" \
+            -xstartup "$HOME/.vnc/xstartup" \
+            -dry-run || true
+
+          echo ""
+          echo "✅ Configuration validation completed."
+
+
+      # ==========================================================
+      # 🧹 CLEAN OLD SESSIONS
+      # ==========================================================
+
+      - name: "🧹 Clean old VNC sessions"
         shell: bash
         run: |
           set +e
 
           echo ""
-          echo "🧹 Checking for existing VNC sessions..."
+          echo "🧹 Cleaning old VNC sessions..."
 
-          vncserver -kill "$DISPLAY_NUM" >/tmp/vnc-kill.log 2>&1 || true
+          vncserver -kill "$DISPLAY_NUM" 2>/dev/null || true
 
-          rm -f \
-            "$HOME/.vnc"/*"${DISPLAY_NUM#:}".pid \
-            "$HOME/.vnc"/*"${DISPLAY_NUM#:}".log \
-            2>/dev/null || true
+          pkill -TERM -f "Xvnc ${DISPLAY_NUM}" 2>/dev/null || true
+          pkill -TERM -f "Xkasmvnc ${DISPLAY_NUM}" 2>/dev/null || true
 
           rm -f \
             "/tmp/.X${DISPLAY_NUM#:}-lock" \
+            "/tmp/.X11-unix/X${DISPLAY_NUM#:}" \
             2>/dev/null || true
 
-          echo "✅ Old session cleanup complete."
+          echo "✅ Old sessions cleared."
 
-      # ============================================================
+
+      # ==========================================================
       # 🚀 START KASMVNC
-      # ============================================================
+      # ==========================================================
 
       - name: "🚀 Start KasmVNC desktop"
         shell: bash
@@ -393,7 +600,10 @@ jobs:
           echo "🌐 Local port  : $KASMVNC_PORT"
           echo "🔐 HTTPS       : enabled"
           echo "🌍 Interface   : 127.0.0.1"
+          echo "🖥️ Desktop     : XFCE"
           echo ""
+
+          rm -f "$HOME/.vnc/startup.log"
 
           vncserver \
             "$DISPLAY_NUM" \
@@ -405,60 +615,107 @@ jobs:
             -interface 127.0.0.1 \
             -cert "$HOME/.vnc/self.pem" \
             -key "$HOME/.vnc/self.pem" \
-            -select-de manual \
+            -xstartup "$HOME/.vnc/xstartup" \
             >"$HOME/.vnc/startup.log" 2>&1 &
 
-          VNC_WRAPPER_PID=$!
+          VNC_PID=$!
 
-          echo "VNC_WRAPPER_PID=$VNC_WRAPPER_PID" >> "$GITHUB_ENV"
+          echo "VNC_PID=$VNC_PID" >> "$GITHUB_ENV"
 
+          echo "🚀 vncserver launcher PID: $VNC_PID"
+          echo ""
           echo "⏳ Waiting for KasmVNC..."
 
           READY=0
 
-          for i in $(seq 1 45); do
+          for i in $(seq 1 60); do
 
-            if curl \
-              --silent \
-              --insecure \
-              --fail \
-              --connect-timeout 2 \
-              "https://127.0.0.1:${KASMVNC_PORT}/" \
-              >/dev/null 2>&1; then
+            # ----------------------------------------------------
+            # Check launcher
+            # ----------------------------------------------------
 
-              READY=1
-              break
-            fi
+            if ! kill -0 "$VNC_PID" 2>/dev/null; then
 
-            if ! kill -0 "$VNC_WRAPPER_PID" 2>/dev/null; then
               echo ""
-              echo "❌ KasmVNC process exited unexpectedly."
+              echo "❌ vncserver launcher exited."
+
               echo ""
-              echo "──── KasmVNC startup log ────"
+              echo "──── launcher log ────"
               cat "$HOME/.vnc/startup.log" || true
+
               echo ""
-              echo "──── VNC logs ────"
+              echo "──── KasmVNC logs ────"
               cat "$HOME"/.vnc/*.log 2>/dev/null || true
+
+              echo ""
+              echo "──── process list ────"
+              ps aux | grep -Ei 'vnc|xfce' | grep -v grep || true
+
               exit 1
             fi
 
-            printf "⏳ Waiting... %02d/45\r" "$i"
+            # ----------------------------------------------------
+            # Check port
+            # ----------------------------------------------------
+
+            if ss -lnt 2>/dev/null | grep -q ":${KASMVNC_PORT} "; then
+
+              echo ""
+              echo "🔌 Port ${KASMVNC_PORT} is listening."
+
+              # --------------------------------------------------
+              # Check HTTPS
+              # --------------------------------------------------
+
+              if curl \
+                --silent \
+                --show-error \
+                --insecure \
+                --fail \
+                --connect-timeout 3 \
+                "https://127.0.0.1:${KASMVNC_PORT}/" \
+                >/tmp/kasmvnc-http.html 2>/tmp/kasmvnc-http-error; then
+
+                READY=1
+                break
+
+              fi
+
+            fi
+
+            printf "⏳ Waiting... %02d/60\r" "$i"
+
             sleep 2
+
           done
 
           echo ""
 
           if [ "$READY" != "1" ]; then
-            echo "❌ KasmVNC did not become ready."
+
             echo ""
-            echo "──── startup.log ────"
-            cat "$HOME/.vnc/startup.log" || true
+            echo "❌ KasmVNC failed health check."
+
+            echo ""
+            echo "──── HTTP error ────"
+            cat /tmp/kasmvnc-http-error 2>/dev/null || true
+
+            echo ""
+            echo "──── startup log ────"
+            cat "$HOME/.vnc/startup.log" 2>/dev/null || true
+
             echo ""
             echo "──── VNC logs ────"
             cat "$HOME"/.vnc/*.log 2>/dev/null || true
+
             echo ""
-            echo "──── Listening ports ────"
+            echo "──── ports ────"
             ss -lntp || true
+
+            echo ""
+            echo "──── processes ────"
+            ps aux | grep -Ei 'vnc|xfce|dbus' | grep -v grep || true
+
             exit 1
           fi
 
@@ -467,18 +724,21 @@ jobs:
           echo "║              ✅ DESKTOP READY                      ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
-          echo "🖥️ XFCE:        running"
-          echo "🔐 KasmVNC:     running"
-          echo "🌐 Local URL:   https://127.0.0.1:${KASMVNC_PORT}/"
-          echo "🔒 Bound to:    localhost only"
+
+          echo "🖥️ XFCE       : running"
+          echo "🔐 KasmVNC    : running"
+          echo "🌐 HTTPS      : enabled"
+          echo "🔌 Port       : ${KASMVNC_PORT}"
+          echo "🔒 Binding    : 127.0.0.1"
           echo ""
 
           echo "🔎 Listening socket:"
           ss -lntp | grep ":${KASMVNC_PORT}" || true
 
-      # ============================================================
-      # ☁️ CLOUDFLARE
-      # ============================================================
+
+      # ==========================================================
+      # ☁️ INSTALL CLOUDFLARED
+      # ==========================================================
 
       - name: "☁️ Install Cloudflare Tunnel"
         shell: bash
@@ -486,21 +746,28 @@ jobs:
           set -euo pipefail
 
           echo ""
-          echo "☁️ Installing cloudflared..."
+          echo "╔════════════════════════════════════════════════════╗"
+          echo "║           ☁️ CLOUDFLARE INSTALLATION               ║"
+          echo "╚════════════════════════════════════════════════════╝"
+          echo ""
 
           ARCH="$(dpkg --print-architecture)"
 
           case "$ARCH" in
+
             amd64)
               CF_ARCH="amd64"
               ;;
+
             arm64)
               CF_ARCH="arm64"
               ;;
+
             *)
               echo "❌ Unsupported architecture: $ARCH"
               exit 1
               ;;
+
           esac
 
           curl \
@@ -513,16 +780,23 @@ jobs:
             "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
 
           chmod +x /tmp/cloudflared
-          sudo install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
+
+          sudo install \
+            -m 0755 \
+            /tmp/cloudflared \
+            /usr/local/bin/cloudflared
 
           echo ""
+          echo "🔎 cloudflared version:"
           cloudflared --version
 
-          echo "✅ cloudflared installed."
+          echo ""
+          echo "✅ Cloudflare installed."
 
-      # ============================================================
-      # ☁️ START QUICK TUNNEL
-      # ============================================================
+
+      # ==========================================================
+      # ☁️ START CLOUDFLARE
+      # ==========================================================
 
       - name: "☁️ Start Cloudflare Quick Tunnel"
         shell: bash
@@ -531,7 +805,7 @@ jobs:
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║            ☁️ CLOUDFLARE QUICK TUNNEL              ║"
+          echo "║          ☁️ CLOUDFLARE QUICK TUNNEL                ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
 
@@ -547,7 +821,8 @@ jobs:
 
           echo "CLOUDFLARED_PID=$CLOUDFLARED_PID" >> "$GITHUB_ENV"
 
-          echo "☁️ cloudflared PID: $CLOUDFLARED_PID"
+          echo "☁️ PID: $CLOUDFLARED_PID"
+          echo ""
           echo "🔎 Waiting for public URL..."
 
           PUBLIC_URL=""
@@ -567,25 +842,35 @@ jobs:
             fi
 
             if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+
               echo ""
-              echo "❌ cloudflared exited unexpectedly."
+              echo "❌ Cloudflare process exited."
+
               echo ""
               cat /tmp/cloudflared.log || true
+
               exit 1
             fi
 
             printf "⏳ Tunnel startup... %02d/60\r" "$i"
+
             sleep 2
+
           done
 
           echo ""
 
           if [ -z "$PUBLIC_URL" ]; then
-            echo "❌ Cloudflare tunnel URL was not detected."
+
+            echo "❌ Cloudflare URL was not detected."
+
             echo ""
             echo "──── cloudflared log ────"
+
             cat /tmp/cloudflared.log || true
+
             exit 1
+
           fi
 
           DESKTOP_URL="${PUBLIC_URL}/"
@@ -594,21 +879,23 @@ jobs:
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║              🎉 DESKTOP ONLINE                     ║"
+          echo "║                🎉 DESKTOP ONLINE                    ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
+
           echo "📝 Workspace : ${{ inputs.workspace_name }}"
           echo "🖥️ Resolution: ${{ inputs.resolution }}"
           echo "⏱️ Lifetime  : ${{ inputs.duration_hours }} hour(s)"
           echo ""
-          echo "🔗 DESKTOP URL"
+          echo "🔗 Desktop URL:"
+          echo ""
           echo "👉 $DESKTOP_URL"
           echo ""
-          echo "👤 Username: desktop"
-          echo "🔐 Password: the configured desktop password"
+          echo "👤 Username: $DESKTOP_USER"
+          echo "🔐 Password: configured"
           echo ""
-          echo "⚠️ Keep this GitHub Actions job running."
-          echo "⚠️ The Cloudflare URL is temporary."
+          echo "⚠️ The URL is temporary."
+          echo "⚠️ Keep this Actions job running."
           echo ""
 
           echo "::notice title=🖥️ Linux Desktop::$DESKTOP_URL"
@@ -624,65 +911,76 @@ jobs:
             echo "| 🖥️ Resolution | \`${{ inputs.resolution }}\` |"
             echo "| ⏱️ Lifetime | \`${{ inputs.duration_hours }} hour(s)\` |"
             echo "| 🔐 Server | KasmVNC |"
+            echo "| 🖥️ Desktop | XFCE |"
             echo "| ☁️ Tunnel | Cloudflare Quick Tunnel |"
             echo ""
             echo "## 🔗 Open Desktop"
             echo ""
             echo "**$DESKTOP_URL**"
             echo ""
-            echo "### 🔐 Login"
+            echo "## 🔐 Login"
             echo ""
-            echo "- 👤 Username: \`desktop\`"
-            echo "- 🔑 Password: configured in the workflow"
+            echo "- 👤 Username: \`$DESKTOP_USER\`"
+            echo "- 🔑 Password: configured"
             echo ""
-            echo "> ⚠️ The URL is temporary and expires when this workflow ends."
+            echo "> ⚠️ Temporary URL. It expires when this workflow ends."
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "$DESKTOP_URL" > /tmp/desktop-url.txt
 
-      # ============================================================
-      # 📦 ARTIFACT
-      # ============================================================
+
+      # ==========================================================
+      # 📦 PUBLISH URL
+      # ==========================================================
 
       - name: "📦 Publish desktop URL"
         uses: actions/upload-artifact@v4
+
         with:
           name: "desktop-url"
+
           path: /tmp/desktop-url.txt
+
           retention-days: 1
+
           if-no-files-found: error
 
-      # ============================================================
+
+      # ==========================================================
       # 💓 KEEP ALIVE
-      # ============================================================
+      # ==========================================================
 
       - name: "💓 Keep desktop alive"
         shell: bash
         run: |
           set -euo pipefail
 
-          TOTAL_SECONDS="$SESSION_SECONDS"
           START_TIME="$(date +%s)"
-          END_TIME=$((START_TIME + TOTAL_SECONDS))
+
+          END_TIME=$((START_TIME + SESSION_SECONDS))
+
+          LAST_MINUTE=""
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║              💓 SESSION ACTIVE                     ║"
+          echo "║               💓 SESSION ACTIVE                    ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
+
           echo "🖥️ Workspace : ${{ inputs.workspace_name }}"
-          echo "⏱️ Duration  : ${{ inputs.duration_hours }} hour(s)"
           echo "🖥️ Resolution: ${{ inputs.resolution }}"
+          echo "⏱️ Duration  : ${{ inputs.duration_hours }} hour(s)"
           echo "🔗 Desktop   : $DESKTOP_URL"
           echo ""
-          echo "🚀 Your Linux desktop is ready."
-          echo ""
 
-          LAST_MINUTE=""
+          echo "🚀 Desktop is ready."
+          echo "💡 Do not stop this Actions job while using the desktop."
+          echo ""
 
           while true; do
 
             NOW="$(date +%s)"
+
             REMAINING=$((END_TIME - NOW))
 
             if [ "$REMAINING" -le 0 ]; then
@@ -690,21 +988,23 @@ jobs:
             fi
 
             HOURS=$((REMAINING / 3600))
+
             MINUTES=$(((REMAINING % 3600) / 60))
+
             SECONDS=$((REMAINING % 60))
 
             CURRENT_MINUTE="${HOURS}:${MINUTES}"
 
             if [ "$CURRENT_MINUTE" != "$LAST_MINUTE" ]; then
 
-              echo "💓 Session active │ ⏳ ${HOURS}h ${MINUTES}m ${SECONDS}s remaining │ 🌐 online"
+              echo "💓 ONLINE │ ⏳ ${HOURS}h ${MINUTES}m ${SECONDS}s remaining │ 🖥️ XFCE │ ☁️ Cloudflare"
 
               LAST_MINUTE="$CURRENT_MINUTE"
 
             else
 
               printf \
-                "\r💓 Online │ ⏳ %02dh %02dm %02ds remaining │ 🖥️ XFCE │ ☁️ Cloudflare" \
+                "\r💓 ONLINE │ ⏳ %02dh %02dm %02ds │ 🖥️ XFCE │ ☁️ Cloudflare" \
                 "$HOURS" \
                 "$MINUTES" \
                 "$SECONDS"
@@ -717,12 +1017,13 @@ jobs:
 
           echo ""
           echo ""
-          echo "⏰ Requested session duration has ended."
-          echo "🛑 Shutting down desktop..."
+          echo "⏰ Session duration reached."
+          echo "🛑 Desktop will now shut down."
 
-      # ============================================================
+
+      # ==========================================================
       # 🧹 CLEANUP
-      # ============================================================
+      # ==========================================================
 
       - name: "🧹 Cleanup"
         if: always()
@@ -732,23 +1033,38 @@ jobs:
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║                 🧹 CLEANUP                          ║"
+          echo "║                  🧹 CLEANUP                        ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
 
+          # ------------------------------------------------------
+          # ☁️ Cloudflare
+          # ------------------------------------------------------
+
           echo "☁️ Stopping Cloudflare..."
+
           if [ -n "${CLOUDFLARED_PID:-}" ]; then
             kill "$CLOUDFLARED_PID" 2>/dev/null || true
           fi
 
           pkill -TERM -f cloudflared 2>/dev/null || true
 
+
+          # ------------------------------------------------------
+          # 🖥️ KasmVNC
+          # ------------------------------------------------------
+
           echo "🖥️ Stopping KasmVNC..."
 
           vncserver -kill "$DISPLAY_NUM" 2>/dev/null || true
 
-          pkill -TERM -f Xkasmvnc 2>/dev/null || true
-          pkill -TERM -f 'Xvnc KasmVNC' 2>/dev/null || true
+          pkill -TERM -f "Xvnc ${DISPLAY_NUM}" 2>/dev/null || true
+          pkill -TERM -f "Xkasmvnc ${DISPLAY_NUM}" 2>/dev/null || true
+
+
+          # ------------------------------------------------------
+          # 🖥️ XFCE
+          # ------------------------------------------------------
 
           echo "🖥️ Stopping XFCE..."
 
@@ -756,35 +1072,44 @@ jobs:
           pkill -TERM -f xfce4-panel 2>/dev/null || true
           pkill -TERM -f xfwm4 2>/dev/null || true
 
+
           sleep 2
 
+
+          # ------------------------------------------------------
+          # 📋 DIAGNOSTICS
+          # ------------------------------------------------------
+
           echo ""
-          echo "📋 Final listening sockets:"
+          echo "📋 Remaining listening sockets:"
           ss -lntp 2>/dev/null || true
 
           echo ""
           echo "📋 KasmVNC logs:"
+
           for logfile in "$HOME"/.vnc/*.log; do
+
             if [ -f "$logfile" ]; then
+
               echo ""
               echo "──── $logfile ────"
-              tail -n 80 "$logfile" || true
+
+              tail -n 100 "$logfile" || true
+
             fi
+
           done
+
 
           echo ""
           echo "📋 Cloudflare log:"
+
           if [ -f /tmp/cloudflared.log ]; then
-            tail -n 80 /tmp/cloudflared.log || true
+            tail -n 100 /tmp/cloudflared.log || true
           fi
 
-          echo ""
-          echo "📋 KasmVNC startup log:"
-          if [ -f "$HOME/.vnc/startup.log" ]; then
-            tail -n 80 "$HOME/.vnc/startup.log" || true
-          fi
 
           echo ""
           echo "╔════════════════════════════════════════════════════╗"
-          echo "║             ✅ CLEANUP COMPLETE                    ║"
+          echo "║              ✅ CLEANUP COMPLETE                    ║"
           echo "╚════════════════════════════════════════════════════╝"
