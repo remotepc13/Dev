@@ -1,0 +1,583 @@
+name: 🖥️ Linux Desktop — KDE Plasma
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      workspace_name:
+        description: "🏷️ Name for this desktop session"
+        required: false
+        type: string
+        default: "KDE Workspace"
+
+      desktop_password:
+        description: "🔐 VNC/Desktop password (shown in logs)"
+        required: true
+        type: string
+        default: "desktop123"
+
+      keep_alive_hours:
+        description: "⏱️ Session duration"
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+        default: "2"
+
+      resolution:
+        description: "🖥️ Desktop resolution"
+        required: true
+        type: choice
+        options:
+          - "1280x720"
+          - "1600x900"
+          - "1920x1080"
+        default: "1920x1080"
+
+
+jobs:
+
+  desktop:
+
+    name: 🖥️ KDE Plasma Desktop
+
+    runs-on: ubuntu-24.04
+
+    timeout-minutes: 360
+
+    steps:
+
+      # ==============================================================
+      # 1. BEAUTIFUL START LOG
+      # ==============================================================
+
+      - name: 🚀 Start Linux Desktop
+        shell: bash
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "             🖥️  LINUX DESKTOP LAUNCHER"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "🎨 Desktop       : KDE Plasma"
+          echo "🖥️  Resolution    : ${{ inputs.resolution }}"
+          echo "🏷️  Workspace      : ${{ inputs.workspace_name }}"
+          echo "⏱️  Duration       : ${{ inputs.keep_alive_hours }} hour(s)"
+          echo ""
+          echo "📡 Remote display : KasmVNC"
+          echo "🌐 Public tunnel  : Cloudflare Quick Tunnel"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+      # ==============================================================
+      # 2. INSTALL KDE PLASMA
+      # ==============================================================
+
+      - name: 🎨 Install KDE Plasma
+        shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          echo "📦 Updating Ubuntu packages..."
+
+          sudo apt-get update -qq
+
+          echo "🎨 Installing KDE Plasma..."
+
+          sudo apt-get install -y -qq \
+            kde-plasma-desktop \
+            plasma-workspace \
+            plasma-desktop \
+            kde-standard \
+            konsole \
+            dolphin \
+            dbus-x11 \
+            xauth \
+            x11-xserver-utils \
+            curl \
+            wget \
+            unzip \
+            jq \
+            ca-certificates \
+            >/dev/null
+
+          echo ""
+          echo "✅ KDE Plasma installed successfully."
+          echo ""
+
+      # ==============================================================
+      # 3. INSTALL KasmVNC
+      # ==============================================================
+
+      - name: 🌐 Install KasmVNC
+        shell: bash
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🌐 Installing KasmVNC"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # KasmVNC release API
+          RELEASE_JSON="$(curl -fsSL \
+            https://api.github.com/repos/kasmtech/KasmVNC/releases/latest)"
+
+          DOWNLOAD_URL="$(
+            echo "$RELEASE_JSON" |
+            jq -r '
+              .assets[]
+              | select(
+                  (.name | test("ubuntu.*amd64|ubuntu.*x86_64|jammy.*amd64|noble.*amd64"; "i"))
+                  and
+                  (.name | endswith(".deb"))
+                )
+              | .browser_download_url
+            ' |
+            head -n1
+          )"
+
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            echo "❌ Could not locate a KasmVNC Ubuntu AMD64 package."
+            echo ""
+            echo "Available release assets:"
+            echo "$RELEASE_JSON" |
+              jq -r '.assets[].name' |
+              head -50
+            exit 1
+          fi
+
+          echo "⬇️ Downloading:"
+          echo "$DOWNLOAD_URL"
+          echo ""
+
+          curl -fL \
+            "$DOWNLOAD_URL" \
+            -o /tmp/kasmvnc.deb
+
+          echo "📦 Installing KasmVNC..."
+
+          sudo apt-get install -y \
+            /tmp/kasmvnc.deb
+
+          echo ""
+          echo "✅ KasmVNC installed."
+          echo ""
+
+      # ==============================================================
+      # 4. CONFIGURE KDE SESSION
+      # ==============================================================
+
+      - name: 🪄 Configure KDE Plasma
+        shell: bash
+        run: |
+          echo ""
+          echo "🎨 Configuring KDE Plasma session..."
+
+          mkdir -p "$HOME/.config"
+          mkdir -p "$HOME/.local/share"
+
+          # Tell applications that KDE is the desktop.
+          cat > "$HOME/.xinitrc" <<'EOF'
+          #!/bin/bash
+
+          export XDG_CURRENT_DESKTOP=KDE
+          export XDG_SESSION_DESKTOP=KDE
+          export KDE_FULL_SESSION=true
+          export DESKTOP_SESSION=plasma
+          export QT_X11_NO_MITSHM=1
+
+          # Start a DBus session.
+          if command -v dbus-launch >/dev/null 2>&1; then
+            eval "$(dbus-launch --sh-syntax --exit-with-session)"
+          fi
+
+          # Start KDE Plasma.
+          exec startplasma-x11
+          EOF
+
+          chmod +x "$HOME/.xinitrc"
+
+          # Disable screen locking / power saving.
+          mkdir -p "$HOME/.config"
+
+          cat > "$HOME/.config/powermanagementprofilesrc" <<'EOF'
+          [AC][DPMSControl]
+          idleTime=0
+          lockBeforeTurnOff=0
+          turnOffIdle=false
+
+          [AC][DimDisplay]
+          idleTime=0
+          idleTimeout=0
+          idleAction=0
+
+          [AC][HandleButtonEvents]
+          lidAction=0
+          powerButtonAction=0
+          powerDownAction=0
+          triggerLidAction=false
+          EOF
+
+          echo "✅ KDE configuration ready."
+
+      # ==============================================================
+      # 5. CREATE DESKTOP USER PASSWORD
+      # ==============================================================
+
+      - name: 🔐 Configure Desktop Password
+        shell: bash
+        env:
+          DESKTOP_PASSWORD: ${{ inputs.desktop_password }}
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔐 DESKTOP LOGIN INFORMATION"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "👤 User     : $USER"
+          echo "🔑 Password : $DESKTOP_PASSWORD"
+          echo ""
+          echo "⚠️  IMPORTANT:"
+          echo "   This password is intentionally visible in this workflow log."
+          echo "   Anyone who can read this job's logs can see it."
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # KasmVNC password file.
+          mkdir -p "$HOME/.vnc"
+
+          printf '%s\n' "$DESKTOP_PASSWORD" |
+            vncpasswd -f |
+            tr -d '\r' |
+            head -c 8 \
+            > "$HOME/.vnc/passwd"
+
+          chmod 600 "$HOME/.vnc/passwd"
+
+          # Store for later steps.
+          echo "DESKTOP_PASSWORD=$DESKTOP_PASSWORD" >> "$GITHUB_ENV"
+
+      # ==============================================================
+      # 6. START KasmVNC
+      # ==============================================================
+
+      - name: 🖥️ Start KDE + KasmVNC
+        shell: bash
+        env:
+          DISPLAY_RESOLUTION: ${{ inputs.resolution }}
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🖥️  STARTING KDE PLASMA"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          mkdir -p "$HOME/.vnc"
+
+          # Convert 1920x1080 into KasmVNC geometry.
+          GEOMETRY="$DISPLAY_RESOLUTION"
+
+          echo "🖥️ Resolution: $GEOMETRY"
+          echo ""
+
+          # Start KasmVNC.
+          #
+          # KasmVNC provides its own browser-based web client.
+          # Port 8444 is used locally and will be exposed through
+          # Cloudflare in the next step.
+
+          kasmvncserver \
+            :1 \
+            -geometry "$GEOMETRY" \
+            -depth 24 \
+            -localhost \
+            no \
+            -xstartup "$HOME/.xinitrc" \
+            > /tmp/kasmvnc.log 2>&1 &
+
+          KASMVNC_PID=$!
+
+          echo "KASMVNC_PID=$KASMVNC_PID" >> "$GITHUB_ENV"
+
+          echo "⏳ Waiting for KasmVNC..."
+
+          for i in $(seq 1 60); do
+
+            if ! kill -0 "$KASMVNC_PID" 2>/dev/null; then
+              echo "❌ KasmVNC stopped unexpectedly."
+              echo ""
+              cat /tmp/kasmvnc.log
+              exit 1
+            fi
+
+            if ss -lnt 2>/dev/null | grep -Eq ':(8444|5901)\b'; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo ""
+          echo "📋 KasmVNC log:"
+          echo "────────────────────────────────────────────────────────────"
+          tail -100 /tmp/kasmvnc.log || true
+          echo "────────────────────────────────────────────────────────────"
+          echo ""
+
+          if ! ss -lnt 2>/dev/null | grep -Eq ':(8444|5901)\b'; then
+            echo "❌ KasmVNC did not open its listening port."
+            exit 1
+          fi
+
+          echo "✅ KDE Plasma + KasmVNC is running."
+          echo ""
+
+      # ==============================================================
+      # 7. INSTALL CLOUDFLARED
+      # ==============================================================
+
+      - name: ☁️ Install Cloudflare Tunnel
+        shell: bash
+        run: |
+          echo ""
+          echo "☁️ Installing Cloudflare Tunnel..."
+          echo ""
+
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+
+          chmod +x /tmp/cloudflared
+
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+
+          cloudflared --version
+
+          echo ""
+          echo "✅ Cloudflare Tunnel installed."
+          echo ""
+
+      # ==============================================================
+      # 8. START CLOUDFLARE QUICK TUNNEL
+      # ==============================================================
+
+      - name: 🌍 Create Public Desktop URL
+        shell: bash
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🌍 CREATING SECURE PUBLIC DESKTOP TUNNEL"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # KasmVNC normally exposes HTTPS on 8444.
+          #
+          # If your installed KasmVNC build uses another port,
+          # change 8444 below.
+
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url https://127.0.0.1:8444 \
+            --no-tls-verify \
+            > /tmp/cloudflared.log 2>&1 &
+
+          CLOUDFLARED_PID=$!
+
+          echo "CLOUDFLARED_PID=$CLOUDFLARED_PID" >> "$GITHUB_ENV"
+
+          echo "⏳ Waiting for Cloudflare tunnel..."
+
+          URL=""
+
+          for i in $(seq 1 90); do
+
+            URL=$(
+              grep -oE \
+                'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+                /tmp/cloudflared.log |
+              head -n1 ||
+              true
+            )
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ -z "$URL" ]; then
+            echo ""
+            echo "❌ Cloudflare tunnel failed to start."
+            echo ""
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+          echo "DESKTOP_URL=$URL" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 YOUR KDE DESKTOP IS READY!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "🌐 Desktop URL:"
+          echo ""
+          echo "👉 $URL"
+          echo ""
+          echo "🖥️  Desktop      : KDE Plasma"
+          echo "📡 Streaming     : KasmVNC"
+          echo "🖥️  Resolution   : ${{ inputs.resolution }}"
+          echo "🏷️  Workspace     : ${{ inputs.workspace_name }}"
+          echo "⏱️  Lifetime      : ${{ inputs.keep_alive_hours }} hour(s)"
+          echo ""
+          echo "🔐 Password:"
+          echo ""
+          echo "👉 ${{ inputs.desktop_password }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # GitHub Actions annotation.
+          echo "::notice title=🖥️ KDE Desktop::$URL"
+
+          # Save URL for launcher/API consumers.
+          printf '%s\n' "$URL" > /tmp/desktop-url.txt
+
+          # Create rich GitHub summary.
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          # 🖥️ KDE Plasma Desktop
+
+          ## 🎉 Desktop Ready
+
+          | Setting | Value |
+          |---|---|
+          | 🎨 Desktop | **KDE Plasma** |
+          | 📡 Streaming | **KasmVNC** |
+          | 🖥️ Resolution | **${{ inputs.resolution }}** |
+          | 🏷️ Workspace | **${{ inputs.workspace_name }}** |
+          | ⏱️ Lifetime | **${{ inputs.keep_alive_hours }} hour(s)** |
+
+          ## 🌐 Open Desktop
+
+          ### 👉 [$URL]($URL)
+
+          ## 🔐 Login
+
+          **User:** \`$USER\`
+
+          **Password:** \`${{ inputs.desktop_password }}\`
+
+          > ⚠️ The password is intentionally displayed because this workflow
+          > was configured to show it in the logs.
+
+          ## 🚀 Status
+
+          🟢 **ONLINE**
+
+          Your KDE Plasma desktop is running on the GitHub Actions runner.
+
+          ---
+          🕐 Session automatically terminates after **${{ inputs.keep_alive_hours }} hour(s)**.
+          EOF
+
+      # ==============================================================
+      # 9. UPLOAD URL ARTIFACT
+      # ==============================================================
+
+      - name: 📦 Publish Desktop Connection Information
+        uses: actions/upload-artifact@v4
+        with:
+          name: 🖥️-kde-desktop-connection
+          path: /tmp/desktop-url.txt
+          retention-days: 1
+
+      # ==============================================================
+      # 10. KEEP DESKTOP ALIVE
+      # ==============================================================
+
+      - name: ⏱️ Keep Desktop Online
+        shell: bash
+        run: |
+          HOURS="${{ inputs.keep_alive_hours }}"
+          SECONDS=$((HOURS * 60 * 60))
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🟢 DESKTOP SESSION IS ONLINE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "🌐 URL      : $DESKTOP_URL"
+          echo "🖥️  Desktop  : KDE Plasma"
+          echo "📡 Engine   : KasmVNC"
+          echo "⏱️  Runtime  : ${HOURS} hour(s)"
+          echo ""
+          echo "💡 Keep this workflow running while using the desktop."
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # Countdown in 10-minute intervals.
+          REMAINING="$SECONDS"
+
+          while [ "$REMAINING" -gt 0 ]; do
+
+            MINUTES=$((REMAINING / 60))
+
+            echo "⏳ Desktop remaining: ${MINUTES} minute(s)"
+
+            sleep 600
+
+            REMAINING=$((REMAINING - 600))
+
+            if [ "$REMAINING" -lt 0 ]; then
+              REMAINING=0
+            fi
+          done
+
+      # ==============================================================
+      # 11. CLEANUP
+      # ==============================================================
+
+      - name: 🧹 Shutdown Desktop
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 CLEANING UP DESKTOP SESSION"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          if [ -n "${CLOUDFLARED_PID:-}" ]; then
+            echo "☁️ Stopping Cloudflare tunnel..."
+            kill "$CLOUDFLARED_PID" 2>/dev/null || true
+          fi
+
+          if [ -n "${KASMVNC_PID:-}" ]; then
+            echo "🖥️ Stopping KasmVNC..."
+            kill "$KASMVNC_PID" 2>/dev/null || true
+          fi
+
+          echo ""
+          echo "📋 Cloudflare log:"
+          tail -50 /tmp/cloudflared.log 2>/dev/null || true
+
+          echo ""
+          echo "📋 KasmVNC log:"
+          tail -50 /tmp/kasmvnc.log 2>/dev/null || true
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 DESKTOP SESSION ENDED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "👋 Thank you for using Linux Desktop Launcher."
+          echo ""
