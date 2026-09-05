@@ -1,0 +1,454 @@
+name: 🖥️ Linux Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace_name:
+        description: "📝 Name shown in the desktop session"
+        required: false
+        default: "workspace"
+
+      duration_hours:
+        description: "⏱️ Desktop lifetime (1–6 hours)"
+        type: choice
+        required: true
+        default: "2"
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+
+      resolution:
+        description: "🖥️ Desktop resolution"
+        type: choice
+        required: true
+        default: "1920x1080"
+        options:
+          - "1280x720"
+          - "1600x900"
+          - "1920x1080"
+
+jobs:
+  desktop:
+    name: 🖥️ Start Linux Desktop
+    runs-on: ubuntu-latest
+
+    # GitHub-hosted runners have platform/account-specific
+    # maximum execution times.
+    timeout-minutes: 360
+
+    env:
+      DISPLAY_NUM: ":1"
+      VNC_DISPLAY: "5901"
+      DESKTOP_PASSWORD: "desktop"
+
+    steps:
+
+      # ─────────────────────────────────────────────
+      # 📦 INSTALL DESKTOP
+      # ─────────────────────────────────────────────
+
+      - name: 📦 Install XFCE desktop
+        shell: bash
+        run: |
+          set -e
+
+          echo "╔══════════════════════════════════════════╗"
+          echo "║        🖥️  LINUX DESKTOP SETUP          ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+
+          echo "🔄 Updating package lists..."
+          sudo apt-get update -qq
+
+          echo "📦 Installing XFCE..."
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            xfce4 \
+            xfce4-terminal \
+            dbus-x11 \
+            x11-xserver-utils \
+            pulseaudio \
+            >/dev/null
+
+          echo "✅ XFCE desktop installed successfully."
+
+      # ─────────────────────────────────────────────
+      # 🎥 INSTALL SELKIES
+      # ─────────────────────────────────────────────
+
+      - name: 🎥 Install Selkies
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "╔══════════════════════════════════════════╗"
+          echo "║       🎥 INSTALLING SELKIES             ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+
+          python3 -m pip install --upgrade pip --quiet
+
+          # Selkies is used as the browser-based desktop
+          # streaming layer instead of noVNC/websockify.
+          python3 -m pip install --upgrade selkies-gstreamer --quiet
+
+          echo "✅ Selkies installed."
+
+      # ─────────────────────────────────────────────
+      # ☁️ CLOUDFLARED
+      # ─────────────────────────────────────────────
+
+      - name: ☁️ Install Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "☁️ Installing Cloudflare Tunnel..."
+
+          curl -fsSL \
+            -o cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+
+          echo "✅ cloudflared installed."
+          cloudflared --version
+
+      # ─────────────────────────────────────────────
+      # 🔍 VALIDATE INPUT
+      # ─────────────────────────────────────────────
+
+      - name: 🔍 Validate session duration
+        shell: bash
+        run: |
+          set -e
+
+          HOURS="${{ inputs.duration_hours }}"
+
+          if ! [[ "$HOURS" =~ ^[1-6]$ ]]; then
+            echo "❌ Invalid duration: $HOURS"
+            echo "ℹ️ Allowed values: 1–6 hours"
+            exit 1
+          fi
+
+          MINUTES=$((HOURS * 60))
+
+          echo "╔══════════════════════════════════════════╗"
+          echo "║          ⏱️ SESSION CONFIGURATION       ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          echo "📝 Workspace : ${{ inputs.workspace_name }}"
+          echo "⏱️ Duration  : ${HOURS} hour(s)"
+          echo "🕐 Minutes   : ${MINUTES}"
+          echo "🖥️ Resolution: ${{ inputs.resolution }}"
+          echo ""
+
+          echo "SESSION_MINUTES=$MINUTES" >> "$GITHUB_ENV"
+
+      # ─────────────────────────────────────────────
+      # 🖥️ START XFCE
+      # ─────────────────────────────────────────────
+
+      - name: 🖥️ Start XFCE desktop
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "🚀 Starting XFCE desktop..."
+
+          mkdir -p "$HOME/.config/autostart"
+
+          cat > "$HOME/.xsession" <<'EOF'
+          #!/bin/bash
+
+          export DISPLAY=:1
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_SESSION_DESKTOP=xfce
+          export XDG_RUNTIME_DIR="/tmp/runtime-${USER}"
+
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          dbus-launch --exit-with-session startxfce4
+          EOF
+
+          chmod +x "$HOME/.xsession"
+
+          echo "✅ XFCE session prepared."
+
+      # ─────────────────────────────────────────────
+      # 🎥 START SELKIES
+      # ─────────────────────────────────────────────
+
+      - name: 🎥 Start Selkies desktop streaming
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "╔══════════════════════════════════════════╗"
+          echo "║       🎥 STARTING DESKTOP STREAM        ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+
+          export DISPLAY=:1
+
+          # Start a virtual X server.
+          sudo apt-get install -y -qq xvfb >/dev/null
+
+          Xvfb :1 \
+            -screen 0 "${{ inputs.resolution }}x24" \
+            -ac \
+            +extension GLX \
+            +render \
+            -noreset \
+            >/tmp/xvfb.log 2>&1 &
+
+          XVFB_PID=$!
+
+          echo "🖥️ Xvfb PID: $XVFB_PID"
+
+          sleep 3
+
+          echo "🖥️ Starting XFCE..."
+
+          DISPLAY=:1 \
+          XDG_CURRENT_DESKTOP=XFCE \
+          XDG_SESSION_DESKTOP=xfce \
+          dbus-launch --exit-with-session startxfce4 \
+            >/tmp/xfce.log 2>&1 &
+
+          XFCE_PID=$!
+
+          echo "🖥️ XFCE PID: $XFCE_PID"
+
+          sleep 5
+
+          echo "🎥 Starting Selkies..."
+
+          # Selkies listens locally.
+          # The exact CLI/options can vary by Selkies release.
+          selkies-gstreamer \
+            --addr=0.0.0.0:8080 \
+            >/tmp/selkies.log 2>&1 &
+
+          SELKIES_PID=$!
+
+          echo "🎥 Selkies PID: $SELKIES_PID"
+
+          sleep 8
+
+          if ! kill -0 "$SELKIES_PID" 2>/dev/null; then
+            echo "❌ Selkies failed to start."
+            echo ""
+            echo "──── Selkies log ────"
+            cat /tmp/selkies.log || true
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Desktop streaming service is running."
+          echo "🌐 Local endpoint: http://127.0.0.1:8080"
+
+      # ─────────────────────────────────────────────
+      # ☁️ CLOUDFLARE QUICK TUNNEL
+      # ─────────────────────────────────────────────
+
+      - name: ☁️ Start Cloudflare Quick Tunnel
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "╔══════════════════════════════════════════╗"
+          echo "║        ☁️ CLOUDFLARE QUICK TUNNEL       ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url http://127.0.0.1:8080 \
+            >/tmp/cloudflared.log 2>&1 &
+
+          CLOUDFLARED_PID=$!
+
+          echo "☁️ cloudflared PID: $CLOUDFLARED_PID"
+
+          echo ""
+          echo "🔎 Waiting for public URL..."
+
+          URL=""
+
+          for i in $(seq 1 60); do
+            URL=$(grep -oE \
+              'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
+              /tmp/cloudflared.log \
+              | head -n1 || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            printf "⏳ Attempt %02d/60\r" "$i"
+            sleep 2
+          done
+
+          echo ""
+
+          if [ -z "$URL" ]; then
+            echo "❌ Cloudflare tunnel failed to start."
+            echo ""
+            echo "──── cloudflared log ────"
+            cat /tmp/cloudflared.log || true
+            exit 1
+          fi
+
+          DESKTOP_URL="$URL"
+
+          echo "DESKTOP_URL=$DESKTOP_URL" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "╔══════════════════════════════════════════╗"
+          echo "║             🎉 DESKTOP READY             ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          echo "🖥️ Workspace : ${{ inputs.workspace_name }}"
+          echo "🖥️ Resolution: ${{ inputs.resolution }}"
+          echo "⏱️ Lifetime  : ${{ inputs.duration_hours }} hour(s)"
+          echo ""
+          echo "🔗 Desktop URL:"
+          echo "👉 $DESKTOP_URL"
+          echo ""
+
+          # GitHub Actions annotation
+          echo "::notice title=🖥️ Linux Desktop::$DESKTOP_URL"
+
+          # Job summary
+          {
+            echo "# 🖥️ Linux Desktop"
+            echo ""
+            echo "## 🎉 Desktop is ready!"
+            echo ""
+            echo "| Setting | Value |"
+            echo "|---|---|"
+            echo "| 📝 Workspace | \`${{ inputs.workspace_name }}\` |"
+            echo "| 🖥️ Resolution | \`${{ inputs.resolution }}\` |"
+            echo "| ⏱️ Lifetime | \`${{ inputs.duration_hours }} hour(s)\` |"
+            echo ""
+            echo "### 🔗 Open Desktop"
+            echo ""
+            echo "👉 **$DESKTOP_URL**"
+            echo ""
+            echo "> ⚠️ This URL is temporary and exists only while the GitHub Actions job is running."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$DESKTOP_URL" > /tmp/desktop-url.txt
+
+      # ─────────────────────────────────────────────
+      # 📦 SAVE URL
+      # ─────────────────────────────────────────────
+
+      - name: 📦 Publish desktop URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-url
+          path: /tmp/desktop-url.txt
+          retention-days: 1
+
+      # ─────────────────────────────────────────────
+      # 💓 KEEP ALIVE
+      # ─────────────────────────────────────────────
+
+      - name: 💓 Keep desktop alive
+        shell: bash
+        run: |
+          set -e
+
+          TOTAL_SECONDS=$((SESSION_MINUTES * 60))
+
+          echo ""
+          echo "╔══════════════════════════════════════════╗"
+          echo "║             💓 SESSION ACTIVE            ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          echo "🖥️ Workspace : ${{ inputs.workspace_name }}"
+          echo "⏱️ Duration  : ${{ inputs.duration_hours }} hour(s)"
+          echo "🔗 Desktop   : $DESKTOP_URL"
+          echo ""
+          echo "🚀 Your desktop is ready."
+          echo "💡 Keep this GitHub Actions job running."
+          echo ""
+
+          START=$(date +%s)
+          END=$((START + TOTAL_SECONDS))
+
+          while true; do
+            NOW=$(date +%s)
+            REMAINING=$((END - NOW))
+
+            if [ "$REMAINING" -le 0 ]; then
+              break
+            fi
+
+            HOURS=$((REMAINING / 3600))
+            MINUTES=$(((REMAINING % 3600) / 60))
+            SECONDS=$((REMAINING % 60))
+
+            printf "\r💓 Session active │ ⏳ Remaining: %02dh %02dm %02ds │ 🌐 %s" \
+              "$HOURS" \
+              "$MINUTES" \
+              "$SECONDS" \
+              "$DESKTOP_URL"
+
+            sleep 10
+          done
+
+          echo ""
+          echo ""
+          echo "⏰ Session duration reached."
+          echo "🛑 Desktop session is shutting down."
+
+      # ─────────────────────────────────────────────
+      # 🧹 CLEANUP
+      # ─────────────────────────────────────────────
+
+      - name: 🧹 Cleanup desktop
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════╗"
+          echo "║              🧹 CLEANUP                  ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+
+          echo "🛑 Stopping desktop processes..."
+
+          pkill -f selkies-gstreamer || true
+          pkill -f cloudflared || true
+          pkill -f startxfce4 || true
+          pkill -f xfce4-session || true
+          pkill -f Xvfb || true
+
+          echo "📋 Final service logs:"
+          echo ""
+          echo "──── 🎥 Selkies ────"
+          tail -n 50 /tmp/selkies.log 2>/dev/null || true
+
+          echo ""
+          echo "──── ☁️ Cloudflare ────"
+          tail -n 50 /tmp/cloudflared.log 2>/dev/null || true
+
+          echo ""
+          echo "──── 🖥️ XFCE ────"
+          tail -n 30 /tmp/xfce.log 2>/dev/null || true
+
+          echo ""
+          echo "✅ Cleanup complete."
