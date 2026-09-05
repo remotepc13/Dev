@@ -1,0 +1,82 @@
+# Example GitHub Actions workflow compatible with the Linux Desktop Launcher.
+# Copy to .github/workflows/workflow.yml in your repository and adapt the
+# "Start desktop" step to your own desktop stack (KDE/XFCE + noVNC, Selkies, ...).
+#
+# The launcher only needs three things from this file:
+#   1. `on: workflow_dispatch:`  (so it can be started through the API)
+#   2. a trycloudflare.com URL printed to the logs  (cloudflared does this)
+#   3. (recommended) the URL published as a ::notice:: annotation and/or a
+#      tiny artifact so the launcher can read it WHILE the job is still running.
+#      GitHub only exposes job logs through the API after a job finishes.
+
+name: Linux Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace_name:
+        description: Name shown in the desktop session
+        required: false
+        default: workspace
+      keep_alive_minutes:
+        description: How long the desktop stays up (max 350 on GitHub-hosted runners)
+        type: number
+        required: false
+        default: 120
+      resolution:
+        description: Screen resolution
+        type: choice
+        options: [1280x720, 1600x900, 1920x1080]
+        default: 1920x1080
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Install desktop, VNC server and noVNC
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xfce4 xfce4-terminal tigervnc-standalone-server novnc websockify >/dev/null
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
+
+      - name: Start desktop
+        run: |
+          mkdir -p ~/.vnc
+          echo "desktop" | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd
+          vncserver :1 -geometry "${{ inputs.resolution }}" -localhost yes -xstartup /usr/bin/startxfce4
+          websockify --web=/usr/share/novnc/ 6080 localhost:5901 >/tmp/novnc.log 2>&1 &
+          sleep 3
+
+      - name: Start Cloudflare quick tunnel
+        run: |
+          nohup cloudflared tunnel --no-autoupdate --url http://localhost:6080 > /tmp/cloudflared.log 2>&1 &
+          for i in $(seq 1 60); do
+            URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          if [ -z "$URL" ]; then echo "Tunnel did not start"; cat /tmp/cloudflared.log; exit 1; fi
+          DESKTOP_URL="$URL/vnc.html?autoconnect=true&resize=remote&password=desktop"
+          echo "Cloudflare tunnel: $DESKTOP_URL"
+          # Annotation -> visible through the API while the job is still running
+          echo "::notice title=Linux Desktop URL::$DESKTOP_URL"
+          echo "$DESKTOP_URL" > /tmp/tunnel-url.txt
+          echo "### Linux Desktop" >> "$GITHUB_STEP_SUMMARY"
+          echo "$DESKTOP_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish desktop URL as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tunnel-url
+          path: /tmp/tunnel-url.txt
+          retention-days: 1
+
+      - name: Keep desktop alive
+        run: |
+          echo "Workspace: ${{ inputs.workspace_name }}"
+          sleep $(( ${{ inputs.keep_alive_minutes }} * 60 ))
