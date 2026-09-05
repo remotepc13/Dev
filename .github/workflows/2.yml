@@ -1,31 +1,3 @@
-ChatGPT said:
-آره. برای چیزی که می‌خواهی، Selkies انتخاب بهتری از noVNC است: رابط HTML5 مدرن‌تر، latency بهتر، clipboard، resize و پشتیبانی از WebSocket/WebRTC دارد. مستندات فعلی Selkies هم نصب مستقیم با pip و احراز هویت Basic را پشتیبانی می‌کنند. 
-G
-GitHub
-+1
-
-من این نسخه را طوری چیدم که:
-
-از صفحه Run workflow بتوانی Remote را انتخاب کنی:
-Selkies WebSocket ⭐ پیشنهادی برای GitHub Actions
-Selkies WebRTC
-KasmVNC به‌عنوان fallback
-GUI قابل انتخاب باشد:
-XFCE
-LXQt
-MATE
-Openbox
-مدت اجرا از 1 تا 6 ساعت انتخاب شود.
-Resolution قابل انتخاب باشد.
-Password تصادفی ساخته شود.
-URL و username/password در لاگ با emoji و بخش‌بندی واضح نمایش داده شود.
-Cloudflare Quick Tunnel استفاده شود.
-لینک مستقیماً به رابط وب Remote Desktop برسد.
-لاگ‌های مهم مرتب و خوانا باشند.
-timeout-minutes متناسب با مدت انتخابی تنظیم شود.
-یک نکته مهم: نمایش پسورد کامل در GitHub Actions log یعنی اگر repository عمومی باشد، credential عملاً قابل مشاهده است. چون خودت صراحتاً خواستی full password در log نمایش داده شود، کد پایین این کار را انجام می‌دهد؛ برای repo عمومی توصیه نمی‌کنم.
-
-نسخه پیشنهادی
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║                 🚀 Linux Web Desktop Launcher                      ║
 # ║                                                                    ║
