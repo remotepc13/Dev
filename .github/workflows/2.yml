@@ -1,0 +1,832 @@
+ChatGPT said:
+آره. برای چیزی که می‌خواهی، Selkies انتخاب بهتری از noVNC است: رابط HTML5 مدرن‌تر، latency بهتر، clipboard، resize و پشتیبانی از WebSocket/WebRTC دارد. مستندات فعلی Selkies هم نصب مستقیم با pip و احراز هویت Basic را پشتیبانی می‌کنند. 
+G
+GitHub
++1
+
+من این نسخه را طوری چیدم که:
+
+از صفحه Run workflow بتوانی Remote را انتخاب کنی:
+Selkies WebSocket ⭐ پیشنهادی برای GitHub Actions
+Selkies WebRTC
+KasmVNC به‌عنوان fallback
+GUI قابل انتخاب باشد:
+XFCE
+LXQt
+MATE
+Openbox
+مدت اجرا از 1 تا 6 ساعت انتخاب شود.
+Resolution قابل انتخاب باشد.
+Password تصادفی ساخته شود.
+URL و username/password در لاگ با emoji و بخش‌بندی واضح نمایش داده شود.
+Cloudflare Quick Tunnel استفاده شود.
+لینک مستقیماً به رابط وب Remote Desktop برسد.
+لاگ‌های مهم مرتب و خوانا باشند.
+timeout-minutes متناسب با مدت انتخابی تنظیم شود.
+یک نکته مهم: نمایش پسورد کامل در GitHub Actions log یعنی اگر repository عمومی باشد، credential عملاً قابل مشاهده است. چون خودت صراحتاً خواستی full password در log نمایش داده شود، کد پایین این کار را انجام می‌دهد؛ برای repo عمومی توصیه نمی‌کنم.
+
+نسخه پیشنهادی
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║                 🚀 Linux Web Desktop Launcher                      ║
+# ║                                                                    ║
+# ║  Browser-based Linux desktop for GitHub Actions                    ║
+# ║  Remote: Selkies WebSocket / Selkies WebRTC / KasmVNC             ║
+# ║  Desktop: XFCE / LXQt / MATE / Openbox                            ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+name: 🚀 Linux Web Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      # ────────────────────────────────────────────────────────────────
+      # Remote desktop technology
+      # ────────────────────────────────────────────────────────────────
+      remote:
+        description: "🌐 Remote desktop engine"
+        required: true
+        type: choice
+        options:
+          - selkies-ws
+          - selkies-webrtc
+          - kasmvnc
+        default: selkies-ws
+
+      # ────────────────────────────────────────────────────────────────
+      # Desktop environment
+      # ────────────────────────────────────────────────────────────────
+      desktop:
+        description: "🖥️ Desktop environment"
+        required: true
+        type: choice
+        options:
+          - xfce
+          - lxqt
+          - mate
+          - openbox
+        default: xfce
+
+      # ────────────────────────────────────────────────────────────────
+      # Session lifetime
+      # ────────────────────────────────────────────────────────────────
+      hours:
+        description: "⏱️ Session duration"
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+        default: "2"
+
+      # ────────────────────────────────────────────────────────────────
+      # Screen resolution
+      # ────────────────────────────────────────────────────────────────
+      resolution:
+        description: "🖥️ Screen resolution"
+        required: true
+        type: choice
+        options:
+          - 1280x720
+          - 1600x900
+          - 1920x1080
+        default: 1920x1080
+
+      # ────────────────────────────────────────────────────────────────
+      # Session name
+      # ────────────────────────────────────────────────────────────────
+      workspace_name:
+        description: "🏷️ Workspace name"
+        required: false
+        default: "github-desktop"
+
+
+jobs:
+
+  desktop:
+
+    # GitHub-hosted Ubuntu runner
+    runs-on: ubuntu-latest
+
+    # Maximum GitHub-hosted job runtime is 6 hours.
+    timeout-minutes: 360
+
+    permissions:
+      contents: read
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 1. SYSTEM INFORMATION                                      ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🔎 System information
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║              🚀 LINUX WEB DESKTOP STARTING                  ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          echo "🖥️  Runner       : $(uname -m)"
+          echo "🐧 OS           : $(. /etc/os-release && echo "$PRETTY_NAME")"
+          echo "🧠 CPU          : $(nproc) cores"
+          echo "💾 Memory       : $(free -h | awk '/Mem:/ {print $2}')"
+          echo "📐 Resolution   : ${{ inputs.resolution }}"
+          echo "🖥️  Desktop      : ${{ inputs.desktop }}"
+          echo "🌐 Remote        : ${{ inputs.remote }}"
+          echo "⏱️  Duration     : ${{ inputs.hours }} hour(s)"
+          echo "🏷️  Workspace    : ${{ inputs.workspace_name }}"
+          echo ""
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 2. INSTALL DESKTOP                                         ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 📦 Install desktop environment
+        shell: bash
+        run: |
+          set -e
+
+          echo "╭──────────────────────────────────────────────────────────────╮"
+          echo "│ 📦 Installing desktop environment                           │"
+          echo "╰──────────────────────────────────────────────────────────────╯"
+
+          sudo apt-get update -qq
+
+          case "${{ inputs.desktop }}" in
+
+            xfce)
+              echo "🟦 Installing XFCE..."
+              sudo apt-get install -y -qq \
+                xfce4 \
+                xfce4-terminal \
+                dbus-x11 \
+                x11-xserver-utils \
+                >/dev/null
+              ;;
+
+            lxqt)
+              echo "🟪 Installing LXQt..."
+              sudo apt-get install -y -qq \
+                lxqt \
+                qterminal \
+                dbus-x11 \
+                x11-xserver-utils \
+                >/dev/null
+              ;;
+
+            mate)
+              echo "🟩 Installing MATE..."
+              sudo apt-get install -y -qq \
+                mate-desktop-environment-core \
+                mate-terminal \
+                dbus-x11 \
+                x11-xserver-utils \
+                >/dev/null
+              ;;
+
+            openbox)
+              echo "⬛ Installing Openbox..."
+              sudo apt-get install -y -qq \
+                openbox \
+                xterm \
+                dbus-x11 \
+                x11-xserver-utils \
+                >/dev/null
+              ;;
+
+            *)
+              echo "❌ Unknown desktop: ${{ inputs.desktop }}"
+              exit 1
+              ;;
+          esac
+
+          echo "✅ Desktop installation complete."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 3. COMMON APPLICATIONS                                     ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🧰 Install useful desktop applications
+        shell: bash
+        run: |
+          set -e
+
+          echo "📦 Installing common utilities..."
+
+          sudo apt-get install -y -qq \
+            curl \
+            wget \
+            git \
+            unzip \
+            zip \
+            nano \
+            vim \
+            htop \
+            neofetch \
+            firefox \
+            fonts-liberation \
+            fonts-noto \
+            >/dev/null || true
+
+          echo "✅ Applications installed."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 4. CREATE VIRTUAL DISPLAY                                   ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🖥️ Create virtual X11 display
+        shell: bash
+        run: |
+          set -e
+
+          echo "🖥️ Installing virtual X server..."
+
+          sudo apt-get install -y -qq \
+            xvfb \
+            xauth \
+            >/dev/null
+
+          export DISPLAY=:99
+
+          Xvfb :99 \
+            -screen 0 "${{ inputs.resolution }}x24" \
+            -ac \
+            +extension GLX \
+            +render \
+            -noreset \
+            >/tmp/xvfb.log 2>&1 &
+
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+          sleep 3
+
+          if ! pgrep -f "Xvfb :99" >/dev/null; then
+            echo "❌ Xvfb failed to start."
+            cat /tmp/xvfb.log || true
+            exit 1
+          fi
+
+          echo "✅ Virtual display ready: :99"
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 5. START DESKTOP SESSION                                   ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🖥️ Start desktop session
+        shell: bash
+        run: |
+          set -e
+
+          echo "╭──────────────────────────────────────────────────────────────╮"
+          echo "│ 🖥️ Starting desktop session                                │"
+          echo "╰──────────────────────────────────────────────────────────────╯"
+
+          case "${{ inputs.desktop }}" in
+
+            xfce)
+              echo "🟦 Starting XFCE..."
+              dbus-launch --exit-with-session startxfce4 \
+                >/tmp/desktop.log 2>&1 &
+              ;;
+
+            lxqt)
+              echo "🟪 Starting LXQt..."
+              dbus-launch --exit-with-session startlxqt \
+                >/tmp/desktop.log 2>&1 &
+              ;;
+
+            mate)
+              echo "🟩 Starting MATE..."
+              dbus-launch --exit-with-session mate-session \
+                >/tmp/desktop.log 2>&1 &
+              ;;
+
+            openbox)
+              echo "⬛ Starting Openbox..."
+              dbus-launch --exit-with-session openbox-session \
+                >/tmp/desktop.log 2>&1 &
+              ;;
+
+          esac
+
+          sleep 8
+
+          echo "✅ Desktop session started."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 6. GENERATE CREDENTIALS                                    ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🔐 Generate remote credentials
+        shell: bash
+        run: |
+          set -e
+
+          # Generate a random 16-character password.
+          PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 16)"
+
+          USERNAME="desktop"
+
+          echo "REMOTE_USERNAME=$USERNAME" >> "$GITHUB_ENV"
+          echo "REMOTE_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    🔐 LOGIN INFORMATION                    ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ 👤 Username : $USERNAME"
+          echo "║ 🔑 Password : $PASSWORD"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 7A. INSTALL SELKIES                                       ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🚀 Install Selkies
+        if: inputs.remote == 'selkies-ws' || inputs.remote == 'selkies-webrtc'
+        shell: bash
+        run: |
+          set -e
+
+          echo "╭──────────────────────────────────────────────────────────────╮"
+          echo "│ 🚀 Installing Selkies                                       │"
+          echo "╰──────────────────────────────────────────────────────────────╯"
+
+          sudo apt-get install -y -qq \
+            python3-pip \
+            python3-venv \
+            jq \
+            >/dev/null
+
+          SELKIES_VERSION="$(
+            curl -fsSL \
+              https://api.github.com/repos/selkies-project/selkies/releases/latest \
+              | jq -r '.tag_name' \
+              | sed 's/[^0-9.\-]//g'
+          )"
+
+          echo "📌 Selkies version: ${SELKIES_VERSION}"
+
+          cd /tmp
+
+          curl -fsSL \
+            -o "selkies-${SELKIES_VERSION}-py3-none-any.whl" \
+            "https://github.com/selkies-project/selkies/releases/download/v${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-py3-none-any.whl"
+
+          sudo PIP_BREAK_SYSTEM_PACKAGES=1 \
+            pip3 install \
+            --no-cache-dir \
+            --force-reinstall \
+            "selkies-${SELKIES_VERSION}-py3-none-any.whl"
+
+          echo "SELKIES_VERSION=${SELKIES_VERSION}" >> "$GITHUB_ENV"
+
+          echo "✅ Selkies installed."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 7B. START SELKIES                                         ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🚀 Start Selkies
+        if: inputs.remote == 'selkies-ws' || inputs.remote == 'selkies-webrtc'
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    🚀 SELKIES REMOTE                       ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          mkdir -p /tmp/selkies
+
+          if [ "${{ inputs.remote }}" = "selkies-webrtc" ]; then
+            echo "🌐 Transport : WebRTC"
+            MODE="--mode=webrtc"
+          else
+            echo "🌐 Transport : WebSocket"
+            MODE=""
+          fi
+
+          echo "🖥️  Display   : $DISPLAY"
+          echo "📐 Resolution: ${{ inputs.resolution }}"
+          echo "👤 Username  : $REMOTE_USERNAME"
+
+          if [ "${{ inputs.remote }}" = "selkies-webrtc" ]; then
+
+            selkies \
+              --addr=0.0.0.0 \
+              --port=8080 \
+              $MODE \
+              --enable-https=false \
+              --basic-auth-user="$REMOTE_USERNAME" \
+              --basic-auth-password="$REMOTE_PASSWORD" \
+              --encoder=h264enc \
+              --enable-resize=true \
+              >/tmp/selkies.log 2>&1 &
+
+          else
+
+            selkies \
+              --addr=0.0.0.0 \
+              --port=8080 \
+              --enable-https=false \
+              --basic-auth-user="$REMOTE_USERNAME" \
+              --basic-auth-password="$REMOTE_PASSWORD" \
+              --encoder=h264enc \
+              --enable-resize=true \
+              >/tmp/selkies.log 2>&1 &
+
+          fi
+
+          echo $! > /tmp/remote.pid
+
+          sleep 8
+
+          if ! kill -0 "$(cat /tmp/remote.pid)" 2>/dev/null; then
+            echo "❌ Selkies failed to start."
+            echo ""
+            cat /tmp/selkies.log || true
+            exit 1
+          fi
+
+          echo "SELKIES_PID=$(cat /tmp/remote.pid)" >> "$GITHUB_ENV"
+
+          echo "✅ Selkies is running on port 8080."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 7C. INSTALL KASMVNC FALLBACK                              ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🟠 Install KasmVNC fallback
+        if: inputs.remote == 'kasmvnc'
+        shell: bash
+        run: |
+          set -e
+
+          echo "╭──────────────────────────────────────────────────────────────╮"
+          echo "│ 🟠 Installing KasmVNC fallback                              │"
+          echo "╰──────────────────────────────────────────────────────────────╯"
+
+          sudo apt-get install -y -qq \
+            curl \
+            jq \
+            >/dev/null
+
+          # Current stable KasmVNC release.
+          KASMVNC_VERSION="1.4.0"
+
+          curl -fsSL \
+            -o /tmp/kasmvnc.deb \
+            "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_noble_${KASMVNC_VERSION}_amd64.deb"
+
+          sudo apt-get install -y /tmp/kasmvnc.deb
+
+          sudo usermod -aG ssl-cert "$USER" || true
+
+          echo "KASMVNC_VERSION=${KASMVNC_VERSION}" >> "$GITHUB_ENV"
+
+          echo "✅ KasmVNC installed."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 7D. START KASMVNC                                         ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🟠 Start KasmVNC
+        if: inputs.remote == 'kasmvnc'
+        shell: bash
+        run: |
+          set -e
+
+          echo "🚀 Starting KasmVNC..."
+
+          mkdir -p ~/.vnc
+
+          # KasmVNC password file.
+          printf '%s\n%s\n' \
+            "$REMOTE_PASSWORD" \
+            "$REMOTE_PASSWORD" \
+            | kasmvncpasswd \
+              -u "$USER" \
+              -w \
+              -r \
+              -o ~/.vnc/passwd
+
+          chmod 600 ~/.vnc/passwd
+
+          # Select desktop.
+          case "${{ inputs.desktop }}" in
+            xfce)
+              DE="xfce"
+              ;;
+            mate)
+              DE="mate"
+              ;;
+            *)
+              DE="xfce"
+              ;;
+          esac
+
+          echo "🖥️ Desktop: $DE"
+
+          vncserver :1 \
+            -geometry "${{ inputs.resolution }}" \
+            -select-de "$DE" \
+            >/tmp/kasmvnc.log 2>&1 &
+
+          echo $! > /tmp/remote.pid
+
+          sleep 10
+
+          if ! pgrep -f "Xkasmvnc" >/dev/null; then
+            echo "❌ KasmVNC failed to start."
+            cat /tmp/kasmvnc.log || true
+            exit 1
+          fi
+
+          echo "REMOTE_PORT=8444" >> "$GITHUB_ENV"
+
+          echo "✅ KasmVNC is running."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 8. INSTALL CLOUDFLARED                                    ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: ☁️ Install Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -e
+
+          echo "☁️ Installing cloudflared..."
+
+          curl -fsSL \
+            -o /tmp/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+
+          chmod +x /tmp/cloudflared
+
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+
+          cloudflared --version
+
+          echo "✅ Cloudflare Tunnel installed."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 9. START CLOUDFLARE TUNNEL                               ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🌍 Start public browser tunnel
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                 🌍 STARTING WEB TUNNEL                     ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          if [ "${{ inputs.remote }}" = "kasmvnc" ]; then
+            TARGET="https://127.0.0.1:8444"
+          else
+            TARGET="http://127.0.0.1:8080"
+          fi
+
+          echo "🎯 Internal target: $TARGET"
+
+          nohup cloudflared \
+            tunnel \
+            --no-autoupdate \
+            --url "$TARGET" \
+            >/tmp/cloudflared.log 2>&1 &
+
+          echo $! > /tmp/cloudflared.pid
+
+          echo "⏳ Waiting for Cloudflare URL..."
+
+          URL=""
+
+          for i in $(seq 1 60); do
+
+            URL="$(
+              grep -oE \
+              'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
+              /tmp/cloudflared.log \
+              | head -n1 \
+              || true
+            )"
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ -z "$URL" ]; then
+            echo "❌ Cloudflare tunnel failed."
+            echo ""
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+          echo "REMOTE_URL=$URL" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    🎉 DESKTOP READY                        ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║                                                            ║"
+          echo "║  🌐 OPEN THIS URL:                                         ║"
+          echo "║  $URL"
+          echo "║                                                            ║"
+          echo "║  👤 Username: $REMOTE_USERNAME"
+          echo "║  🔑 Password: $REMOTE_PASSWORD"
+          echo "║                                                            ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          echo "::notice title=🌐 Remote Desktop::$URL"
+          echo "::notice title=👤 Username::$REMOTE_USERNAME"
+          echo "::notice title=🔑 Password::$REMOTE_PASSWORD"
+
+          {
+            echo "## 🚀 Linux Web Desktop"
+            echo ""
+            echo "| Setting | Value |"
+            echo "|---|---|"
+            echo "| 🌐 Remote | ${{ inputs.remote }} |"
+            echo "| 🖥️ Desktop | ${{ inputs.desktop }} |"
+            echo "| 📐 Resolution | ${{ inputs.resolution }} |"
+            echo "| ⏱️ Duration | ${{ inputs.hours }} hour(s) |"
+            echo "| 👤 Username | \`$REMOTE_USERNAME\` |"
+            echo "| 🔑 Password | \`$REMOTE_PASSWORD\` |"
+            echo ""
+            echo "### 🌍 Remote Desktop"
+            echo ""
+            echo "**$URL**"
+            echo ""
+            echo "> ⚠️ Keep this URL and password private."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$URL" > /tmp/desktop-url.txt
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 10. HEALTH CHECK                                           ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: ❤️ Remote desktop health check
+        shell: bash
+        run: |
+          set -e
+
+          echo "❤️ Checking remote desktop..."
+
+          if [ "${{ inputs.remote }}" = "kasmvnc" ]; then
+            CHECK_URL="https://127.0.0.1:8444"
+          else
+            CHECK_URL="http://127.0.0.1:8080"
+          fi
+
+          if curl \
+            -k \
+            -L \
+            --max-time 15 \
+            -s \
+            -o /dev/null \
+            "$CHECK_URL"; then
+
+            echo "✅ Remote desktop HTTP endpoint is responding."
+
+          else
+
+            echo "⚠️ Health check did not receive a normal response."
+            echo "The remote service may still be starting..."
+          fi
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 11. LIVE LOG MONITOR                                      ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 📊 Live session monitor
+        shell: bash
+        run: |
+          set -e
+
+          TOTAL_SECONDS=$(( ${{ inputs.hours }} * 60 * 60 ))
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                  🟢 SESSION ACTIVE                         ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "🌐 URL       : $REMOTE_URL"
+          echo "👤 Username  : $REMOTE_USERNAME"
+          echo "🔑 Password  : $REMOTE_PASSWORD"
+          echo "🖥️ Desktop   : ${{ inputs.desktop }}"
+          echo "🌐 Remote    : ${{ inputs.remote }}"
+          echo "📐 Resolution: ${{ inputs.resolution }}"
+          echo "⏱️ Runtime   : ${{ inputs.hours }} hour(s)"
+          echo ""
+
+          echo "💡 Keep this GitHub Actions job running."
+          echo "💡 Closing the job will terminate the desktop."
+          echo ""
+
+          START_TIME=$(date +%s)
+
+          while true; do
+
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TIME))
+
+            if [ "$ELAPSED" -ge "$TOTAL_SECONDS" ]; then
+              break
+            fi
+
+            REMAINING=$((TOTAL_SECONDS - ELAPSED))
+
+            HOURS=$((REMAINING / 3600))
+            MINUTES=$(((REMAINING % 3600) / 60))
+            SECONDS=$((REMAINING % 60))
+
+            printf "\r⏳ Remaining: %02dh %02dm %02ds   " \
+              "$HOURS" "$MINUTES" "$SECONDS"
+
+            sleep 30
+
+          done
+
+          echo ""
+          echo ""
+          echo "⏰ Session time has expired."
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 12. DEBUG INFORMATION                                     ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🧾 Print diagnostic logs
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    🧾 DIAGNOSTICS                          ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          echo "──────── 🖥️ Desktop ────────"
+          tail -n 80 /tmp/desktop.log 2>/dev/null || true
+
+          echo ""
+          echo "──────── 🚀 Selkies ─────────"
+          tail -n 80 /tmp/selkies.log 2>/dev/null || true
+
+          echo ""
+          echo "──────── 🟠 KasmVNC ─────────"
+          tail -n 80 /tmp/kasmvnc.log 2>/dev/null || true
+
+          echo ""
+          echo "──────── ☁️ Cloudflare ──────"
+          tail -n 80 /tmp/cloudflared.log 2>/dev/null || true
+
+      # ╔══════════════════════════════════════════════════════════════╗
+      # ║ 13. CLEANUP                                               ║
+      # ╚══════════════════════════════════════════════════════════════╝
+
+      - name: 🧹 Cleanup remote desktop
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    🧹 CLEANUP                              ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+
+          if [ -f /tmp/cloudflared.pid ]; then
+            kill "$(cat /tmp/cloudflared.pid)" 2>/dev/null || true
+          fi
+
+          if [ -f /tmp/remote.pid ]; then
+            kill "$(cat /tmp/remote.pid)" 2>/dev/null || true
+          fi
+
+          pkill -f cloudflared 2>/dev/null || true
+          pkill -f selkies 2>/dev/null || true
+
+          echo "✅ Remote services stopped."
+          echo "👋 Desktop session finished."
